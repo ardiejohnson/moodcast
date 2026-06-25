@@ -1,0 +1,650 @@
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { LineChart, Line, XAxis, YAxis, ReferenceLine, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+
+/* ----------------------------------------------------------------------
+   MOODCAST - a weather app for public mood.
+   Hero index - 7 categories - drill-down - open search & questions -
+   saveable + reorderable subjects - per-entity graphs - custom view -
+   settings - share card. Taxonomy is pure data.
+   ---------------------------------------------------------------------- */
+
+const INK = "#1B2330", INK2 = "#5A6472", LINE = "#E3E7EC", PAPER = "#F1F4F7", CARD = "#FFFFFF", ACCENT = "#1B2330";
+const F = { display: "'Bricolage Grotesque', system-ui, sans-serif", ui: "'Plus Jakarta Sans', system-ui, sans-serif" };
+
+const CATEGORIES = [
+  { id: "econ", label: "Economy & Cost of Living", query: "cost of living and economy news today", subs: [
+    { id: "infl", label: "Inflation", query: "inflation news today" },
+    { id: "house", label: "Housing & Rent", query: "housing costs and rent news today" },
+    { id: "jobs", label: "Jobs & Wages", query: "jobs and wages news today" },
+    { id: "price", label: "Prices & Groceries", query: "grocery prices and cost of goods news" }] },
+  { id: "pol", label: "Politics", query: "politics news today", subs: [
+    { id: "elec", label: "Elections", query: "elections and campaigns news today" },
+    { id: "policy", label: "Policy & Law", query: "policy and legislation news today" },
+    { id: "gov", label: "Government & Leaders", query: "government and political leaders news today" },
+    { id: "controv", label: "Controversy", query: "political controversy news today" }] },
+  { id: "world", label: "World & Current Events", query: "world news and current events today", subs: [
+    { id: "conflict", label: "Conflict & War", query: "global conflict and war news today" },
+    { id: "climate", label: "Disasters & Climate", query: "natural disasters and climate news today" },
+    { id: "diplo", label: "Diplomacy", query: "international diplomacy news today" },
+    { id: "breaking", label: "Breaking News", query: "major breaking world news today" }] },
+  { id: "tech", label: "Tech & AI", query: "technology and AI news today", subs: [
+    { id: "ai", label: "Artificial Intelligence", query: "artificial intelligence news today" },
+    { id: "bigtech", label: "Big Tech", query: "big tech company news today" },
+    { id: "gadgets", label: "Gadgets & Products", query: "new gadgets and tech products news" },
+    { id: "startup", label: "Startups", query: "startup and venture news today" }] },
+  { id: "health", label: "Health & Mental Health", query: "health and mental health news today", subs: [
+    { id: "mh", label: "Mental Health", query: "mental health news this week" },
+    { id: "care", label: "Healthcare", query: "healthcare and medicine news today" },
+    { id: "fit", label: "Fitness & Wellness", query: "fitness and wellness news this week" },
+    { id: "research", label: "Medical Research", query: "medical research breakthroughs news" }] },
+  { id: "money", label: "Money & Markets", query: "stock market and finance news today", subs: [
+    { id: "stocks", label: "Stocks", query: "stock market news today" },
+    { id: "crypto", label: "Crypto", query: "cryptocurrency news today" },
+    { id: "housing", label: "Housing Market", query: "housing market news today" },
+    { id: "biz", label: "Business", query: "business and corporate news today" }] },
+  { id: "culture", label: "Culture & Entertainment", query: "entertainment and pop culture news today", subs: [
+    { id: "screen", label: "Movies & TV", query: "movies and TV news this week" },
+    { id: "music", label: "Music", query: "music news this week" },
+    { id: "celeb", label: "Celebrities", query: "celebrity news this week" },
+    { id: "sport", label: "Sports", query: "sports news today" },
+    { id: "viral", label: "Viral & Internet", query: "viral internet culture news this week" }] },
+];
+
+const STOPS = [[0,[46,53,80]],[20,[70,87,122]],[38,[124,133,149]],[50,[182,169,142]],[65,[224,178,94]],[80,[244,169,59]],[100,[255,196,77]]];
+function moodRGB(m){ m=Math.max(0,Math.min(100,m)); for(let i=0;i<STOPS.length-1;i++){const[a,ca]=STOPS[i],[b,cb]=STOPS[i+1];if(m<=b){const t=(m-a)/(b-a||1);return ca.map((v,k)=>Math.round(v+(cb[k]-v)*t));}} return STOPS[STOPS.length-1][1]; }
+const rgb=(a)=>`rgb(${a[0]},${a[1]},${a[2]})`;
+const scl=(a,f)=>a.map(v=>Math.round(Math.max(0,Math.min(255,v*f))));
+const moodColor=(m)=>m==null?"#AEB4BD":rgb(moodRGB(m));
+const moodWord=(m)=>m==null?"No mood yet":m<18?"Stormy":m<34?"Rainy":m<46?"Overcast":m<60?"Partly cloudy":m<74?"Fair":m<88?"Sunny":"Radiant";
+const glyphType=(m)=>m==null?"none":m<18?"storm":m<34?"rain":m<46?"cloud":m<60?"partly":m<74?"fair":m<88?"sun":"radiant";
+const toMood=(s)=>Math.round((Math.max(-100,Math.min(100,s))+100)/2);
+const appendSeries=(prev,mood,t,cap=160)=>{ if(mood==null)return prev||[]; return [...(prev||[]),{t,mood}].slice(-cap); };
+const slug=(s)=>"sub:"+s.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,42);
+
+const store = {
+  async get(k){ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):null; }catch{ return null; } },
+  async set(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch{} },
+};
+function parseJson(t){ if(!t)return null; let s=t.replace(/```json/gi,"").replace(/```/g,"").trim(); try{return JSON.parse(s);}catch{} const a=s.indexOf("{"),b=s.lastIndexOf("}"); if(a!==-1&&b>a){try{return JSON.parse(s.slice(a,b+1));}catch{return null;}} return null; }
+
+async function callModel(system, user){
+  const res = await fetch("/api/grade", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ system, user }),
+  });
+  if(!res.ok) throw new Error("HTTP "+res.status);
+  const data = await res.json();
+  return data.text || "";
+}
+async function gradeQuery(query, n=4){
+  const system = `You are a public-mood analyst. Use web search to find the ${n} most recent items about the subject, `+
+    `then grade the emotional tone of each. Respond with ONLY valid JSON, no markdown. Schema: `+
+    `{"items":[{"title":"<actual headline, <=16 words>","source":"<outlet>","url":"<url>",`+
+    `"summary":"<your own words, <=16 words>","score":<integer -100..100>}]}. Score: -100 very negative, 0 neutral, `+
+    `+100 very positive. Judge mood, not importance. Paraphrase summaries. Return exactly ${n} items.`;
+  const text = await callModel(system, `Subject: ${query}. Find the ${n} most recent, relevant items.`);
+  const p = parseJson(text);
+  const items = (p&&Array.isArray(p.items)?p.items:[]).map(it=>({
+    title:String(it.title||"Untitled").slice(0,160), source:String(it.source||"").slice(0,50),
+    url:typeof it.url==="string"?it.url:"", summary:String(it.summary||"").slice(0,160),
+    score:Math.max(-100,Math.min(100,Math.round(Number(it.score)))) })).filter(it=>Number.isFinite(it.score));
+  const mood = items.length ? Math.round(items.reduce((s,i)=>s+toMood(i.score),0)/items.length) : null;
+  return { mood, items };
+}
+
+/* ----------------------- visuals ----------------------- */
+function Glyph({ mood, size=56 }){
+  const t = glyphType(mood); const sun = moodColor(mood); const cloud="#A6AEB9"; const cloudHi="#C3CAD3"; const rain="#6E8BB0"; const bolt="#E9B84A";
+  if(t==="none") return <svg width={size} height={size} viewBox="0 0 64 64"><circle cx="32" cy="32" r="13" fill="none" stroke="#CDD3DB" strokeWidth="3" strokeDasharray="3 5"/></svg>;
+  const Sun = ({cx=32,cy=28,r=12,rays=true})=>(<g>
+    {rays && [...Array(8)].map((_,i)=>{const a=i*Math.PI/4;return <line key={i} x1={cx+Math.cos(a)*(r+4)} y1={cy+Math.sin(a)*(r+4)} x2={cx+Math.cos(a)*(r+9)} y2={cy+Math.sin(a)*(r+9)} stroke={sun} strokeWidth="2.4" strokeLinecap="round"/>;})}
+    <circle cx={cx} cy={cy} r={r} fill={sun}/></g>);
+  const Cloud = ({x=20,y=30,c=cloud})=>(<g fill={c}><ellipse cx={x+8} cy={y+10} rx="13" ry="10"/><circle cx={x+2} cy={y+8} r="8"/><circle cx={x+16} cy={y+4} r="10"/><rect x={x-6} y={y+9} width="34" height="11" rx="5.5"/></g>);
+  return (
+    <svg width={size} height={size} viewBox="0 0 64 64">
+      {t==="radiant" && <><Sun cx={32} cy={30} r={14}/><circle cx="48" cy="16" r="2.4" fill={sun}/><circle cx="14" cy="20" r="1.8" fill={sun}/></>}
+      {t==="sun" && <Sun cx={32} cy={32} r={13}/>}
+      {t==="fair" && <><Sun cx={24} cy={24} r={10}/><Cloud x={26} y={30} c={cloudHi}/></>}
+      {t==="partly" && <><Sun cx={22} cy={22} r={9} rays={false}/><Cloud x={20} y={28}/></>}
+      {t==="cloud" && <><Cloud x={14} y={24} c={cloudHi}/><Cloud x={22} y={28}/></>}
+      {t==="rain" && <><Cloud x={18} y={20}/>{[26,34,42].map((x,i)=><line key={i} x1={x} y1="44" x2={x-3} y2="54" stroke={rain} strokeWidth="2.6" strokeLinecap="round"/>)}</>}
+      {t==="storm" && <><Cloud x={18} y={18} c="#8E97A3"/><polygon points="32,42 26,54 31,54 28,62 40,48 34,48 38,42" fill={bolt}/></>}
+    </svg>
+  );
+}
+function Spark({ series, color }){
+  if(!series || series.length<2) return null;
+  const w=64,h=20; const pts = series.map((v,i)=>{const x=(i/(series.length-1))*w;const y=h-(Math.max(0,Math.min(100,v))/100)*h;return `${x.toFixed(1)},${y.toFixed(1)}`;}).join(" ");
+  return <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`}><polyline points={pts} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.85"/></svg>;
+}
+function EntityGraph({ series }){
+  if(!series || series.length<2)
+    return <div style={{padding:"22px 12px",textAlign:"center",color:INK2,fontSize:12.5,background:CARD,border:`1px dashed ${LINE}`,borderRadius:12}}>Not enough history yet — each reading adds a point and the graph fills in here.</div>;
+  const data=series.map(p=>({t:p.t,mood:p.mood}));
+  return (
+    <div style={{height:170,background:CARD,border:`1px solid ${LINE}`,borderRadius:12,padding:"10px 8px 4px"}}>
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data} margin={{top:6,right:12,bottom:2,left:-22}}>
+          <defs><linearGradient id="eg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#F4A93B"/><stop offset="100%" stopColor="#46577A"/></linearGradient></defs>
+          <CartesianGrid stroke={LINE} vertical={false}/>
+          <XAxis dataKey="t" tickFormatter={t=>new Date(t).toLocaleDateString([],{month:"short",day:"numeric"})} stroke={LINE} tickLine={false} minTickGap={40}/>
+          <YAxis domain={[0,100]} ticks={[0,50,100]} stroke={LINE} tickLine={false}/>
+          <ReferenceLine y={50} stroke={INK2} strokeDasharray="3 3"/>
+          <Tooltip contentStyle={{borderRadius:10,border:`1px solid ${LINE}`,fontFamily:F.ui,fontSize:12}} labelFormatter={t=>new Date(t).toLocaleString()}/>
+          <Line type="monotone" dataKey="mood" name="Mood" stroke="url(#eg)" strokeWidth={3} dot={{r:2.5}} isAnimationActive={false}/>
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+function Spinner({ size=16, color=INK2, stroke=2.4 }){
+  return (<svg className="spin" width={size} height={size} viewBox="0 0 24 24" fill="none" style={{display:"block",flexShrink:0}} aria-label="loading" role="status">
+    <circle cx="12" cy="12" r="9" stroke={color} strokeOpacity="0.22" strokeWidth={stroke}/>
+    <path d="M21 12a9 9 0 0 0-9-9" stroke={color} strokeWidth={stroke} strokeLinecap="round"/></svg>);
+}
+function ConfirmButton({ label, onConfirm, style }){
+  const [armed,setArmed]=useState(false);
+  useEffect(()=>{ if(armed){const t=setTimeout(()=>setArmed(false),2600);return ()=>clearTimeout(t);} },[armed]);
+  return <button style={style} onClick={()=>{ if(armed){setArmed(false);onConfirm();} else setArmed(true); }}>{armed?"Tap again to confirm":label}</button>;
+}
+
+/* --------------------------------- APP --------------------------------- */
+export default function MoodCast(){
+  const [results,setResults]=useState({});
+  const [saved,setSaved]=useState([]);
+  const [loadingIds,setLoadingIds]=useState([]);
+  const [busy,setBusy]=useState(false);
+  const [history,setHistory]=useState([]);
+  const [lastRun,setLastRun]=useState(null);
+  const [error,setError]=useState(null);
+  const [detail,setDetail]=useState(null);
+  const [detailLoading,setDetailLoading]=useState(false);
+  const [q,setQ]=useState("");
+  const [searchResult,setSearchResult]=useState(null);
+  const [answer,setAnswer]=useState(null);
+  const [searchBusy,setSearchBusy]=useState(false);
+  const [questionBusy,setQuestionBusy]=useState(false);
+  const [recent,setRecent]=useState([]);
+  const [share,setShare]=useState(false);
+  const [copied,setCopied]=useState(false);
+  const [reduced,setReduced]=useState(false);
+  // settings + view prefs
+  const [perCat,setPerCat]=useState(4);
+  const [includeFollows,setIncludeFollows]=useState(true);
+  const [auto,setAuto]=useState(false);
+  const [interval,setIntervalMin]=useState(60);
+  const [hiddenCats,setHiddenCats]=useState([]);
+  const [catOrder,setCatOrder]=useState([]);
+  const [editMode,setEditMode]=useState(false);
+  const [showSettings,setShowSettings]=useState(false);
+  const [loadedPrefs,setLoadedPrefs]=useState(false);
+  const resultsRef=useRef(results); const timer=useRef(null);
+  useEffect(()=>{resultsRef.current=results;},[results]);
+
+  useEffect(()=>{(async()=>{
+    const h=await store.get("ms:history"); if(h)setHistory(h);
+    const last=await store.get("ms:last"); if(last){setResults(last.results||{});setLastRun(last.t||null);}
+    const r=await store.get("ms:recent"); if(r)setRecent(r);
+    const sv=await store.get("ms:saved"); if(sv)setSaved(sv);
+    const st=await store.get("ms:settings"); if(st){ if(st.perCat)setPerCat(st.perCat); if(typeof st.includeFollows==="boolean")setIncludeFollows(st.includeFollows);
+      if(typeof st.interval==="number")setIntervalMin(st.interval); if(Array.isArray(st.hiddenCats))setHiddenCats(st.hiddenCats); if(Array.isArray(st.catOrder))setCatOrder(st.catOrder); }
+    setLoadedPrefs(true);
+  })();
+    setReduced(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  },[]);
+  useEffect(()=>{ if(loadedPrefs)store.set("ms:settings",{perCat,includeFollows,interval,hiddenCats,catOrder}); },[perCat,includeFollows,interval,hiddenCats,catOrder,loadedPrefs]);
+  useEffect(()=>{ if(loadedPrefs)store.set("ms:saved",saved); },[saved,loadedPrefs]);
+
+  const visibleCats=(()=>{ const byId=Object.fromEntries(CATEGORIES.map(c=>[c.id,c])); const seen=new Set(); const out=[];
+    (catOrder||[]).forEach(id=>{if(byId[id]&&!seen.has(id)){seen.add(id);out.push(byId[id]);}});
+    CATEGORIES.forEach(c=>{if(!seen.has(c.id))out.push(c);});
+    return out.filter(c=>!hiddenCats.includes(c.id)); })();
+
+  const overall=(()=>{const v=CATEGORIES.map(c=>results[c.id]?.mood).filter(x=>x!=null);return v.length?Math.round(v.reduce((a,b)=>a+b,0)/v.length):null;})();
+  const prevOverall=history.length?history[history.length-1].overall:null;
+  const delta=overall!=null&&prevOverall!=null?overall-prevOverall:null;
+  const brightest=(()=>{let best=null;CATEGORIES.forEach(c=>{const m=results[c.id]?.mood;if(m!=null&&(!best||m>best.m))best={c,m};});return best;})();
+  const heaviest=(()=>{let w=null;CATEGORIES.forEach(c=>{const m=results[c.id]?.mood;if(m!=null&&(!w||m<w.m))w={c,m};});return w;})();
+  const mover=(()=>{ let best=null; const ents=[...CATEGORIES.map(c=>({label:c.label,id:c.id})),...saved.map(s=>({label:s.subject,id:s.id}))];
+    ents.forEach(e=>{const sx=results[e.id]?.series;if(sx&&sx.length>=2){const d=sx[sx.length-1].mood-sx[sx.length-2].mood;if(!best||Math.abs(d)>Math.abs(best.d))best={label:e.label,d};}});
+    return best&&best.d!==0?best:null; })();
+  const entitiesWithMood=()=>{ const out=[]; CATEGORIES.forEach(c=>{const m=results[c.id]?.mood;if(m!=null)out.push({id:c.id,label:c.label,mood:m});}); saved.forEach(s=>{const m=results[s.id]?.mood;if(m!=null)out.push({id:s.id,label:s.subject,mood:m});}); return out; };
+
+  const read=useCallback(async(entities,recordOverall=true)=>{
+    if(busy||!entities.length)return; setBusy(true); setError(null); setLoadingIds(entities.map(e=>e.id));
+    const merged={...resultsRef.current}; let fail=0; const t=Date.now();
+    for(let i=0;i<entities.length;i+=5){const batch=entities.slice(i,i+5);
+      const res=await Promise.allSettled(batch.map(e=>gradeQuery(e.query,perCat)));
+      res.forEach((r,j)=>{const id=batch[j].id;
+        if(r.status==="fulfilled"){const prev=merged[id]||{};const series=appendSeries(prev.series,r.value.mood,t);
+          merged[id]={...prev,mood:r.value.mood,items:r.value.items,series};
+          setResults(s=>({...s,[id]:{...s[id],mood:r.value.mood,items:r.value.items,series}}));}
+        else fail++; setLoadingIds(l=>l.filter(x=>x!==id));});}
+    if(recordOverall){const all=CATEGORIES.map(c=>merged[c.id]?.mood).filter(x=>x!=null);
+      if(all.length){const ov=Math.round(all.reduce((a,b)=>a+b,0)/all.length);const byCat={};CATEGORIES.forEach(c=>{if(merged[c.id]?.mood!=null)byCat[c.id]=merged[c.id].mood;});
+        setHistory(h=>{const nh=[...h,{t,overall:ov,byCat}].slice(-240);store.set("ms:history",nh);return nh;});}}
+    setLastRun(t); store.set("ms:last",{results:merged,t});
+    if(fail===entities.length)setError("Couldn't reach the sky right now. Check your connection and try again.");
+    setBusy(false);
+  },[busy,perCat]);
+
+  const readAll=()=>read(includeFollows?[...CATEGORIES,...saved]:[...CATEGORIES],true);
+  const refreshOne=(ent)=>read([ent],false);
+  useEffect(()=>{ if(timer.current){clearInterval(timer.current);timer.current=null;}
+    if(auto)timer.current=setInterval(()=>read(includeFollows?[...CATEGORIES,...saved]:[...CATEGORIES],true),Math.max(1,interval)*60000);
+    return ()=>{if(timer.current)clearInterval(timer.current);}; },[auto,interval,includeFollows,saved,read]);
+
+  const openById=(id)=>{ const c=CATEGORIES.find(x=>x.id===id); if(c)return openEntity("cat",c); const s=saved.find(x=>x.id===id); if(s)return openEntity("sub",s); };
+  const openEntity=async(kind,ent)=>{
+    setDetail({kind,id:ent.id});
+    if(kind==="cat"){ if(resultsRef.current[ent.id]?.subs)return;
+      setDetailLoading(true); const subs={};
+      for(let i=0;i<ent.subs.length;i+=4){const batch=ent.subs.slice(i,i+4);
+        const res=await Promise.allSettled(batch.map(s=>gradeQuery(s.query,Math.min(3,perCat))));
+        res.forEach((r,j)=>{subs[batch[j].id]=r.status==="fulfilled"?r.value:{mood:null,items:[]};});}
+      setResults(s=>({...s,[ent.id]:{...s[ent.id],subs}})); setDetailLoading(false);
+    } else { if(resultsRef.current[ent.id]?.items?.length)return;
+      setDetailLoading(true); try{const r=await gradeQuery(ent.query,perCat);const t=Date.now();
+        setResults(s=>({...s,[ent.id]:{...s[ent.id],mood:r.mood,items:r.items,series:appendSeries(s[ent.id]?.series,r.mood,t)}}));}catch{} setDetailLoading(false);
+    }
+  };
+
+  const looksLikeQuestion=(s)=>{ const x=s.trim(); if(!x)return false; if(x.endsWith("?"))return true;
+    if(/(worst|best|most|least|highest|lowest|gloom|brightest|happiest|saddest|darkest|heaviest)/i.test(x)&&/(mood|forecast|sentiment|feeling|positiv|negativ|topic|subject)/i.test(x))return true;
+    const w=x.split(/\s+/); if(w.length>=4&&/^(what|which|who|where|when|why|how|is|are|does|do|should|can|will|rank|compare|name|tell|list)$/i.test(w[0]))return true; return false; };
+  const strongQuestion=(s)=>/\?\s*$/.test(s.trim())||(/(worst|best|most|least|highest|lowest|gloom|brightest|happiest|saddest|darkest|heaviest)/i.test(s)&&/(mood|forecast|sentiment|feeling|positiv|negativ|topic|subject)/i.test(s));
+  const removeRecent=(i)=>setRecent(prev=>{const nr=prev.filter((_,k)=>k!==i);store.set("ms:recent",nr);return nr;});
+
+  const localSuperlative=(text)=>{ const t=text.toLowerCase();
+    if(!/(worst|best|most|least|highest|lowest|gloom|brightest|happiest|saddest|darkest|heaviest|negative|positive)/.test(t))return null;
+    if(!/(mood|forecast|sentiment|feeling|positiv|negativ|gloom|bright|topic|subject)/.test(t))return null;
+    const ents=entitiesWithMood(); if(!ents.length)return null;
+    const max=/(best|highest|brightest|happiest|most positive|positive|sunniest)/.test(t)&&!/(worst|lowest|heaviest|gloom|negative)/.test(t);
+    const pick=max?ents.reduce((a,b)=>b.mood>a.mood?b:a):ents.reduce((a,b)=>b.mood<a.mood?b:a);
+    const runners=[...ents].sort((a,b)=>max?b.mood-a.mood:a.mood-b.mood).slice(1,3);
+    return { answer:`Right now, ${pick.label} has the ${max?"brightest":"heaviest"} forecast at ${pick.mood}/100 (${moodWord(pick.mood)}).${runners.length?` Next: ${runners.map(r=>`${r.label} ${r.mood}`).join(", ")}.`:""}`, openId:pick.id, mood:pick.mood, local:true }; };
+
+  const askQuestion=async(text)=>{
+    setSearchResult(null); setAnswer(null); setQuestionBusy(true);
+    const loc=localSuperlative(text); if(loc){ setAnswer(loc); setQuestionBusy(false); return; }
+    try{ const ctx=entitiesWithMood().map(e=>`${e.label} ${e.mood}`).join("; ");
+      const system=`You answer questions for a consumer "public mood weather" app. Mood is 0-100 (0 stormy/negative, 50 neutral, 100 radiant/positive). `+
+        `Current dashboard readings: ${ctx||"none yet"}. Use these to answer questions about them; you may use web search for broader questions. `+
+        `Respond ONLY JSON: {"answer":"<conversational, specific, <=55 words>","subject":"<one subject if the question resolves to a specific thing, else empty>","score":<integer -100..100 or null>}.`;
+      const txt=await callModel(system,text); const p=parseJson(txt)||{};
+      setAnswer({ answer:String(p.answer||"I couldn't find a clear answer to that.").slice(0,400), subject:(p.subject||"").trim()||null, mood:typeof p.score==="number"?toMood(p.score):null, raw:text });
+    }catch{ setAnswer({answer:"Couldn't reach the data right now — try again.",raw:text}); }
+    setQuestionBusy(false);
+  };
+
+  const runSearch=async(subjectArg)=>{
+    const subject=(subjectArg??q).trim(); if(!subject||searchBusy)return;
+    setAnswer(null); setSearchBusy(true); setSearchResult(null);
+    try{ const r=await gradeQuery(subject,perCat); const card={subject,mood:r.mood,items:r.items,t:Date.now()}; setSearchResult(card);
+      setRecent(prev=>{const nr=[{subject,mood:r.mood,t:card.t},...prev.filter(x=>x.subject.toLowerCase()!==subject.toLowerCase())].slice(0,8);store.set("ms:recent",nr);return nr;});
+      const id=slug(subject); if(saved.some(s=>s.id===id)){const t=card.t;setResults(s=>({...s,[id]:{...s[id],mood:r.mood,items:r.items,series:appendSeries(s[id]?.series,r.mood,t)}}));}
+    }catch{ setSearchResult({subject,mood:null,items:[],error:true}); }
+    setSearchBusy(false);
+  };
+  const submitSearch=()=>{ const x=q.trim(); if(!x)return; looksLikeQuestion(x)?askQuestion(x):runSearch(); };
+
+  const isSavedSubj=(subj)=>saved.some(s=>s.id===slug(subj));
+  const saveSubject=(subj)=>{ const id=slug(subj); if(saved.some(s=>s.id===id))return; setSaved([...saved,{id,subject:subj,query:subj}]);
+    if(searchResult&&slug(searchResult.subject)===id&&searchResult.mood!=null){const t=Date.now();setResults(s=>({...s,[id]:{mood:searchResult.mood,items:searchResult.items,series:appendSeries(s[id]?.series,searchResult.mood,t)}}));} };
+  const unsave=(id)=>{ setSaved(saved.filter(s=>s.id!==id)); if(detail?.id===id)setDetail(null); };
+  const moveSaved=(id,dir)=>{ const arr=[...saved]; const i=arr.findIndex(s=>s.id===id); const j=i+dir; if(j<0||j>=arr.length)return; [arr[i],arr[j]]=[arr[j],arr[i]]; setSaved(arr); };
+
+  const moveCat=(id,dir)=>{ const vis=visibleCats.map(c=>c.id); const i=vis.indexOf(id); const j=i+dir; if(j<0||j>=vis.length)return; [vis[i],vis[j]]=[vis[j],vis[i]]; setCatOrder([...vis,...hiddenCats]); };
+  const hideCat=(id)=>setHiddenCats([...hiddenCats,id]);
+  const restoreCat=(id)=>setHiddenCats(hiddenCats.filter(x=>x!==id));
+  const clearHistory=()=>{ setHistory([]); store.set("ms:history",[]); setResults(r=>{const n={};for(const k in r)n[k]={...r[k],series:[]};store.set("ms:last",{results:n,t:lastRun});return n;}); };
+
+  const ago=(t)=>{if(!t)return"not yet";const s=Math.floor((Date.now()-t)/1000);return s<60?"just now":s<3600?`${Math.floor(s/60)}m ago`:s<86400?`${Math.floor(s/3600)}h ago`:`${Math.floor(s/86400)}d ago`;};
+  const today=new Date().toLocaleDateString([], {weekday:"long", month:"long", day:"numeric"});
+  const heroSentence = overall==null ? "Tap “Read today’s sky” to take the first reading."
+    : `${moodWord(overall)} overall.${brightest&&heaviest&&brightest.c.id!==heaviest.c.id?` ${brightest.c.label} is the brightest spot; ${heaviest.c.label} is weighing things down.`:""}`;
+  const summaryText = `MoodCast — ${today}\nPublic mood: ${overall??"—"}/100 (${moodWord(overall)})${delta!=null?` ${delta>0?"▲ up "+delta:delta<0?"▼ down "+Math.abs(delta):"steady"} since last`:""}\n${brightest?`Brightest: ${brightest.c.label} (${brightest.m})`:""} · ${heaviest?`Heaviest: ${heaviest.c.label} (${heaviest.m})`:""}`;
+  const copy=async()=>{ try{await navigator.clipboard.writeText(summaryText);setCopied(true);setTimeout(()=>setCopied(false),1800);}catch{setCopied(false);} };
+  const heroTop=rgb(scl(moodRGB(overall??50),0.5)), heroMid=moodColor(overall??50);
+  const chartData=history.map(h=>({t:h.t,overall:h.overall}));
+  const outBusy=searchBusy||questionBusy;
+
+  return (
+    <div style={{fontFamily:F.ui,color:INK,background:PAPER,minHeight:"100%",padding:"clamp(12px,2.5vw,24px)"}}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+        .ms *{box-sizing:border-box;}
+        .ms button{font-family:${F.ui};cursor:pointer;border:none;}
+        .ms button:focus-visible,.ms input:focus-visible{outline:2px solid ${INK};outline-offset:2px;}
+        .ms .cat{transition:transform .15s ease, box-shadow .15s ease;}
+        .ms .cat:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgba(27,35,48,.10);}
+        .ms a{color:${INK};text-decoration:underline;text-underline-offset:2px;}
+        .ms input{font-family:${F.ui};font-size:15px;border:none;background:transparent;color:${INK};width:100%;}
+        .ms input::placeholder{color:#9AA3AE;}
+        .ms .num{width:58px;background:#fff;border:1px solid ${LINE};border-radius:8px;padding:6px 8px;font-size:14px;}
+        .recharts-cartesian-axis-tick text{font-family:${F.ui};fill:${INK2};font-size:11px;}
+        @keyframes ms-spin{to{transform:rotate(360deg);}}
+        @keyframes ms-shimmer{0%{background-position:-180px 0;}100%{background-position:180px 0;}}
+        .ms .spin{animation:ms-spin .8s linear infinite;transform-origin:center;}
+        .ms .skel{background:linear-gradient(90deg,#EDF0F4 25%,#DFE4EA 37%,#EDF0F4 63%);background-size:360px 100%;animation:ms-shimmer 1.15s linear infinite;border-radius:6px;}
+        .ms .busy-card{position:relative;}
+        .ms .busy-card::after{content:"";position:absolute;inset:0;border-radius:18px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.45),transparent);background-size:200% 100%;animation:ms-shimmer 1.3s linear infinite;pointer-events:none;}
+        @media (prefers-reduced-motion: reduce){.ms *{transition:none !important;}.ms .spin{animation:none !important;}.ms .skel{animation:none !important;background:#E5EAEF !important;}.ms .busy-card::after{display:none;}}
+      `}</style>
+
+      <div className="ms" style={{maxWidth:1080,margin:"0 auto"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,gap:10}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <Glyph mood={overall} size={34}/>
+            <div><div style={{fontFamily:F.display,fontWeight:800,fontSize:22,letterSpacing:"-0.02em",lineHeight:1}}>MoodCast</div>
+              <div style={{fontSize:11,color:INK2,marginTop:2}}>{overall==null?"how the world feels today":`the world feels ${moodWord(overall).toLowerCase()} today`}</div></div>
+          </div>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            <button onClick={()=>setShowSettings(true)} title="Settings" style={{background:CARD,border:`1px solid ${LINE}`,borderRadius:12,padding:"9px 11px",display:"flex"}}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={INK} strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.2.62.79 1.05 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </button>
+            <button onClick={readAll} disabled={busy} style={primary(busy)}>{busy?<span style={{display:"inline-flex",alignItems:"center",gap:8}}><Spinner size={15} color="#fff"/>Reading the sky…</span>:overall==null?"Read today’s sky":"Refresh"}</button>
+          </div>
+        </div>
+
+        {/* HERO */}
+        <section style={{borderRadius:24,overflow:"hidden",position:"relative",background:`linear-gradient(160deg, ${heroTop} 0%, ${heroMid} 100%)`,color:"#fff",padding:"clamp(22px,4vw,36px)",minHeight:230,boxShadow:"0 18px 40px rgba(27,35,48,.18)"}}>
+          <div style={{position:"absolute",top:"-30%",right:"-8%",width:280,height:280,borderRadius:"50%",background:`radial-gradient(circle, rgba(255,255,255,${overall!=null?Math.min(.55,overall/160):.2}) 0%, transparent 70%)`,pointerEvents:"none"}}/>
+          <div style={{position:"relative",display:"flex",justifyContent:"space-between",alignItems:"center",gap:16,flexWrap:"wrap"}}>
+            <div>
+              <div style={{fontSize:13,opacity:.85,fontWeight:600}}>{today} · public mood</div>
+              <div style={{display:"flex",alignItems:"baseline",gap:14,marginTop:4}}>
+                <div style={{fontFamily:F.display,fontWeight:800,fontSize:"clamp(64px,13vw,104px)",lineHeight:.9,letterSpacing:"-0.04em",display:"flex",alignItems:"center",minHeight:"0.9em"}}>{overall!=null?overall:(busy?<Spinner size={52} color="#fff" stroke={3}/>:"——")}</div>
+                <div><div style={{fontFamily:F.display,fontWeight:700,fontSize:"clamp(20px,3.4vw,30px)",lineHeight:1}}>{moodWord(overall)}</div>
+                  {delta!=null&&<div style={{fontSize:14,fontWeight:600,opacity:.95,marginTop:4}}>{delta>0?`▲ up ${delta}`:delta<0?`▼ down ${Math.abs(delta)}`:"— steady"} since last</div>}</div>
+              </div>
+              <div style={{fontSize:15,opacity:.92,marginTop:10,maxWidth:440,lineHeight:1.45,fontWeight:500}}>{heroSentence}</div>
+              {(brightest||heaviest) && <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:12}}>
+                {brightest && <span style={heroChip}><Glyph mood={brightest.m} size={18}/><b style={{fontWeight:700}}>Brightest</b> {brightest.c.label} · {brightest.m}</span>}
+                {heaviest && (!brightest||heaviest.c.id!==brightest.c.id) && <span style={heroChip}><Glyph mood={heaviest.m} size={18}/><b style={{fontWeight:700}}>Heaviest</b> {heaviest.c.label} · {heaviest.m}</span>}
+              </div>}
+            </div>
+            <div style={{filter:"drop-shadow(0 6px 14px rgba(0,0,0,.2))"}}><Glyph mood={overall} size={108}/></div>
+          </div>
+          <div style={{position:"relative",marginTop:18,display:"flex",gap:10,flexWrap:"wrap",alignItems:"center"}}>
+            <button onClick={()=>{setCopied(false);setShare(true);}} style={glassBtn}>Share today’s mood</button>
+            <div style={{fontSize:12,opacity:.8}}>updated {ago(lastRun)} · scale 0 (stormy) - 100 (radiant)</div>
+          </div>
+        </section>
+
+        {error&&<div style={{marginTop:14,padding:"10px 14px",border:`1px solid #E7B4A8`,background:"#FBEDE9",borderRadius:12,color:"#9A3B26",fontSize:13}}>{error}</div>}
+
+        {/* SEARCH / ASK */}
+        <section style={{marginTop:18}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,background:CARD,border:`1px solid ${LINE}`,borderRadius:16,padding:"10px 12px 10px 16px",boxShadow:"0 2px 10px rgba(27,35,48,.04)"}}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={INK2} strokeWidth="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+            <input value={q} onChange={e=>setQ(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")submitSearch();}} placeholder={"Look up a subject — or ask “what has the worst mood right now?”"}/>
+            <button onClick={submitSearch} disabled={outBusy||!q.trim()} style={{...primary(outBusy||!q.trim()),minWidth:54,display:"flex",justifyContent:"center"}}>{outBusy?<Spinner size={15} color="#fff"/>:"Go"}</button>
+          </div>
+          {recent.length>0 && <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:10}}>
+            {recent.map((r,i)=>{const isQ=looksLikeQuestion(r.subject);return (
+              <span key={i} style={{display:"inline-flex",alignItems:"center",background:CARD,border:`1px solid ${LINE}`,borderRadius:999,paddingRight:3,maxWidth:340}}>
+                <button onClick={()=>{setQ(r.subject);isQ?askQuestion(r.subject):runSearch(r.subject);}} style={{display:"flex",alignItems:"center",gap:7,background:"transparent",borderRadius:999,padding:"5px 4px 5px 11px",fontSize:12,color:INK,fontWeight:600,minWidth:0}}>
+                  {isQ?<span style={{flexShrink:0,width:14,height:14,borderRadius:"50%",background:"#E7ECF2",color:INK2,fontSize:10,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center"}}>?</span>:<span style={{flexShrink:0,width:8,height:8,borderRadius:"50%",background:moodColor(r.mood)}}/>}
+                  <span style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{r.subject}</span>{!isQ&&<span style={{color:INK2,fontWeight:700,flexShrink:0}}>{r.mood??"—"}</span>}
+                </button>
+                <button onClick={()=>removeRecent(i)} title="Remove" style={{background:"transparent",color:"#AEB6C0",fontSize:12,fontWeight:700,padding:"5px 7px",lineHeight:1}}>×</button>
+              </span>);})}
+          </div>}
+
+          {outBusy && !answer && !searchResult && (
+            <div style={{marginTop:12,display:"flex",alignItems:"center",gap:12,background:CARD,border:`1px solid ${LINE}`,borderRadius:18,padding:18,boxShadow:"0 6px 18px rgba(27,35,48,.06)"}}>
+              <Spinner size={22}/><div style={{fontSize:14,color:INK2,fontWeight:600}}>{questionBusy?"Thinking it through…":"Reading the latest and gauging the mood…"}</div>
+            </div>
+          )}
+
+          {answer && (
+            <div style={{marginTop:12,background:CARD,border:`1px solid ${LINE}`,borderRadius:18,padding:18,boxShadow:"0 6px 18px rgba(27,35,48,.06)"}}>
+              <div style={{fontSize:11,fontWeight:800,letterSpacing:"0.1em",color:INK2,textTransform:"uppercase",marginBottom:8}}>Answer</div>
+              <div style={{fontSize:16,lineHeight:1.5,fontWeight:500}}>{answer.answer}</div>
+              <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",marginTop:12}}>
+                {answer.mood!=null&&<div style={{display:"flex",alignItems:"center",gap:8,background:PAPER,borderRadius:999,padding:"4px 10px"}}><Glyph mood={answer.mood} size={22}/><span style={{fontFamily:F.display,fontWeight:800,color:moodColor(answer.mood)}}>{answer.mood}</span></div>}
+                {answer.openId&&<button onClick={()=>openById(answer.openId)} style={{...primary(false),padding:"7px 13px"}}>Open →</button>}
+                {answer.subject&&!answer.local&&<button onClick={()=>{setQ(answer.subject);runSearch(answer.subject);}} style={{...primary(false),padding:"7px 13px"}}>See {answer.subject} →</button>}
+                {answer.raw&&!strongQuestion(answer.raw)&&<button onClick={()=>{setQ(answer.raw);runSearch(answer.raw);}} style={{background:"transparent",color:INK2,fontSize:12.5,fontWeight:600,textDecoration:"underline",padding:0}}>Look up “{answer.raw}” as a subject</button>}
+              </div>
+            </div>
+          )}
+
+          {searchResult && (
+            <div style={{marginTop:12,background:CARD,border:`1px solid ${LINE}`,borderRadius:18,padding:18,boxShadow:"0 6px 18px rgba(27,35,48,.06)"}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+                <div style={{display:"flex",alignItems:"center",gap:14}}><Glyph mood={searchResult.mood} size={52}/>
+                  <div><div style={{fontFamily:F.display,fontWeight:700,fontSize:20,textTransform:"capitalize"}}>{searchResult.subject}</div>
+                  <div style={{fontSize:13,color:INK2,fontWeight:600}}>{searchResult.error?"Couldn’t get a read — try rephrasing.":moodWord(searchResult.mood)}</div></div></div>
+                <div style={{display:"flex",alignItems:"center",gap:14}}>
+                  {!searchResult.error&&<button onClick={()=>isSavedSubj(searchResult.subject)?openEntity("sub",{id:slug(searchResult.subject),query:searchResult.subject}):saveSubject(searchResult.subject)} style={{background:isSavedSubj(searchResult.subject)?"#FFF6E2":CARD,border:`1px solid ${isSavedSubj(searchResult.subject)?"#E9C877":LINE}`,borderRadius:999,padding:"7px 13px",fontSize:13,fontWeight:700,color:INK}}>{isSavedSubj(searchResult.subject)?"★ Saved · view":"☆ Save & track"}</button>}
+                  <div style={{fontFamily:F.display,fontWeight:800,fontSize:44,color:moodColor(searchResult.mood),lineHeight:1}}>{searchResult.mood??"——"}</div>
+                </div>
+              </div>
+              {searchResult.items?.length>0 && <ul style={{listStyle:"none",margin:"14px 0 0",padding:0,display:"grid",gap:9}}>{searchResult.items.map((it,i)=><Headline key={i} it={it}/>)}</ul>}
+            </div>
+          )}
+        </section>
+
+        {/* FOLLOWING */}
+        {saved.length>0 && (
+          <section style={{marginTop:22}}>
+            <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,letterSpacing:"0.02em",marginBottom:12}}>Following · {saved.length}{editMode?" · drag with ↑ ↓":""}</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:14}}>
+              {saved.map((s,idx)=>{const d=results[s.id];const m=d?.mood;const series=(d?.series||[]).map(p=>p.mood);const loading=loadingIds.includes(s.id);
+                return (<div key={s.id} className={loading?"cat busy-card":"cat"} style={{position:"relative",background:CARD,border:`1px solid ${LINE}`,borderRadius:18,padding:16,boxShadow:"0 2px 10px rgba(27,35,48,.04)"}}>
+                  {editMode ? (
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                      <div style={{display:"flex",gap:6}}>
+                        <button onClick={()=>moveSaved(s.id,-1)} disabled={idx===0} style={ctrlBtn(idx===0)}>↑</button>
+                        <button onClick={()=>moveSaved(s.id,1)} disabled={idx===saved.length-1} style={ctrlBtn(idx===saved.length-1)}>↓</button>
+                      </div>
+                      <button onClick={()=>unsave(s.id)} style={{...ctrlBtn(false),color:"#B4453A"}}>✕ Remove</button>
+                    </div>
+                  ) : (<>
+                    <button onClick={()=>refreshOne(s)} title="Refresh this" disabled={busy} style={{position:"absolute",top:10,right:36,background:"transparent",color:"#AEB6C0",fontSize:14,padding:4}}><span className={loading?"spin":undefined} style={{display:"inline-block"}}>↻</span></button>
+                    <button onClick={()=>unsave(s.id)} title="Unfollow" style={{position:"absolute",top:10,right:10,background:"transparent",color:"#B6BDC6",fontSize:16,lineHeight:1,padding:4}}>×</button>
+                  </>)}
+                  <button onClick={()=>!editMode&&openEntity("sub",s)} style={{textAlign:"left",background:"transparent",width:"100%",padding:0,marginTop:editMode?12:0,cursor:editMode?"default":"pointer"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",paddingRight:editMode?0:18}}>
+                      <Glyph mood={loading?null:m} size={40}/><div style={{fontFamily:F.display,fontWeight:800,fontSize:30,color:moodColor(m),lineHeight:1,minHeight:30,display:"flex",alignItems:"center"}}>{loading?<Spinner size={24}/>:(m??"——")}</div></div>
+                    <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,marginTop:10,textTransform:"capitalize",lineHeight:1.15}}>{s.subject}</div>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginTop:6,minHeight:18}}>
+                      <div style={{fontSize:12,color:INK2,fontWeight:600,display:"flex",alignItems:"center",gap:6}}>{loading?<><Spinner size={11}/>reading…</>:moodWord(m)}</div><Spark series={series} color={moodColor(m)}/></div>
+                    {!editMode&&<div style={{fontSize:11.5,color:"#9AA3AE",marginTop:8,fontWeight:600}}>Tap for graph →</div>}
+                  </button>
+                </div>);})}
+            </div>
+          </section>
+        )}
+
+        {/* SURPRISE */}
+        <div style={{marginTop:18,display:"flex",alignItems:"center",gap:12,background:CARD,border:`1px solid ${LINE}`,borderRadius:14,padding:"12px 16px",boxShadow:"0 2px 10px rgba(27,35,48,.04)"}}>
+          <div style={{fontSize:11,fontWeight:800,letterSpacing:"0.1em",color:INK2,textTransform:"uppercase",whiteSpace:"nowrap"}}>Today’s mover</div>
+          {mover ? <div style={{fontSize:15,fontWeight:600}}>{mover.label} {mover.d>0?"is brightening":"is darkening"} <span style={{color:moodColor(mover.d>0?75:25),fontWeight:800}}>{mover.d>0?`▲ +${mover.d}`:`▼ ${mover.d}`}</span> since your last reading.</div>
+            : <div style={{fontSize:14,color:INK2}}>Take a couple of readings and the biggest shift in mood shows up here.</div>}
+        </div>
+
+        {/* CATEGORY GRID */}
+        <div style={{marginTop:22,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
+          <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,letterSpacing:"0.02em"}}>Forecast by topic</div>
+          <button onClick={()=>setEditMode(v=>!v)} style={{background:editMode?ACCENT:CARD,color:editMode?"#fff":INK,border:`1px solid ${editMode?ACCENT:LINE}`,borderRadius:999,padding:"6px 13px",fontSize:12.5,fontWeight:700}}>{editMode?"Done":"Customize"}</button>
+        </div>
+        {editMode&&<div style={{marginTop:8,fontSize:12.5,color:INK2,background:"#EEF4FF",border:`1px solid #D6E4FB`,borderRadius:12,padding:"9px 13px"}}>Reorder with ↑ ↓, hide with ✕. Hidden topics still count toward the headline mood and can be restored in Settings.</div>}
+        <section style={{marginTop:12,display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(232px,1fr))",gap:14}}>
+          {visibleCats.map((c,idx)=>{const d=results[c.id];const loading=loadingIds.includes(c.id);const m=d?.mood;const has=m!=null;const series=(d?.series||[]).map(p=>p.mood);
+            return (<div key={c.id} className={loading?"cat busy-card":"cat"} style={{position:"relative",background:CARD,border:`1px solid ${LINE}`,borderRadius:18,padding:16,boxShadow:"0 2px 10px rgba(27,35,48,.04)"}}>
+              {editMode ? (<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+                <div style={{display:"flex",gap:6}}>
+                  <button onClick={()=>moveCat(c.id,-1)} disabled={idx===0} style={ctrlBtn(idx===0)}>↑</button>
+                  <button onClick={()=>moveCat(c.id,1)} disabled={idx===visibleCats.length-1} style={ctrlBtn(idx===visibleCats.length-1)}>↓</button>
+                </div>
+                <button onClick={()=>hideCat(c.id)} style={{...ctrlBtn(false),color:"#B4453A"}}>✕ Hide</button>
+              </div>) : has && (
+                <button onClick={()=>refreshOne(c)} title="Refresh this topic" disabled={busy} style={{position:"absolute",top:10,right:10,background:"transparent",color:"#AEB6C0",fontSize:15,padding:4,zIndex:1}}><span className={loading?"spin":undefined} style={{display:"inline-block"}}>↻</span></button>
+              )}
+              <button onClick={()=>{if(editMode)return; has?openEntity("cat",c):refreshOne(c);}} style={{textAlign:"left",background:"transparent",width:"100%",padding:0,cursor:editMode?"default":"pointer"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",paddingRight:(!editMode&&has)?18:0}}>
+                  <Glyph mood={loading?null:m} size={44}/><div style={{fontFamily:F.display,fontWeight:800,fontSize:34,color:moodColor(m),lineHeight:1,minHeight:34,display:"flex",alignItems:"center"}}>{loading?<Spinner size={26}/>:(m??"——")}</div></div>
+                <div style={{fontFamily:F.display,fontWeight:700,fontSize:16,marginTop:10,lineHeight:1.15}}>{c.label}</div>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginTop:6,minHeight:20}}>
+                  <div style={{fontSize:12.5,color:INK2,fontWeight:600,display:"flex",alignItems:"center",gap:6}}>{loading?<><Spinner size={12}/>reading…</>:moodWord(m)}</div><Spark series={series} color={moodColor(m)}/></div>
+                {!editMode&&has&&<div style={{fontSize:11.5,color:"#9AA3AE",marginTop:8,fontWeight:600}}>Tap for graph & why →</div>}
+              </button>
+              {!editMode&&!has&&!loading&&<button onClick={()=>refreshOne(c)} disabled={busy} style={{width:"100%",marginTop:12,background:ACCENT,color:"#fff",borderRadius:10,padding:"9px 0",fontSize:13,fontWeight:700,opacity:busy?.5:1,cursor:busy?"not-allowed":"pointer"}}>Get mood</button>}
+            </div>);})}
+        </section>
+
+        {/* OVERALL TREND */}
+        <section style={{marginTop:24,background:CARD,border:`1px solid ${LINE}`,borderRadius:18,padding:"16px 14px 8px",boxShadow:"0 2px 10px rgba(27,35,48,.04)"}}>
+          <div style={{fontFamily:F.display,fontWeight:700,fontSize:17,paddingLeft:6,marginBottom:6}}>Public mood over time</div>
+          {history.length<2 ? <div style={{padding:"34px 12px",textAlign:"center",color:INK2,fontSize:13}}>Your readings build a real mood history here — saved between visits and growing every time you check in.</div>
+          : <ResponsiveContainer width="100%" height={230}>
+              <LineChart data={chartData} margin={{top:6,right:14,bottom:4,left:-20}}>
+                <defs><linearGradient id="mg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#F4A93B"/><stop offset="100%" stopColor="#46577A"/></linearGradient></defs>
+                <CartesianGrid stroke={LINE} vertical={false}/>
+                <XAxis dataKey="t" tickFormatter={t=>new Date(t).toLocaleDateString([],{month:"short",day:"numeric"})} stroke={LINE} tickLine={false} minTickGap={44}/>
+                <YAxis domain={[0,100]} ticks={[0,25,50,75,100]} stroke={LINE} tickLine={false}/>
+                <ReferenceLine y={50} stroke={INK2} strokeDasharray="3 3"/>
+                <Tooltip contentStyle={{borderRadius:10,border:`1px solid ${LINE}`,fontFamily:F.ui,fontSize:12}} labelFormatter={t=>new Date(t).toLocaleString()}/>
+                <Line type="monotone" dataKey="overall" name="Public mood" stroke="url(#mg)" strokeWidth={3} dot={false} isAnimationActive={!reduced}/>
+              </LineChart>
+            </ResponsiveContainer>}
+        </section>
+
+        <div style={{marginTop:16,fontSize:11,color:"#9AA3AE",textAlign:"center",maxWidth:560,marginLeft:"auto",marginRight:"auto",lineHeight:1.5}}>A playful read on the mood of the news, not a precise measurement. Scores are AI estimates of recent headlines, searched live.</div>
+      </div>
+
+      {/* DETAIL DRAWER */}
+      {detail && (()=>{
+        const isCat=detail.kind==="cat"; const ent=isCat?CATEGORIES.find(c=>c.id===detail.id):saved.find(s=>s.id===detail.id);
+        if(!ent)return null; const d=results[detail.id]; const label=isCat?ent.label:ent.subject; const series=d?.series||[];
+        return (
+        <div onClick={()=>setDetail(null)} style={{position:"fixed",inset:0,background:"rgba(20,26,36,.45)",backdropFilter:"blur(3px)",display:"flex",justifyContent:"flex-end",zIndex:50}}>
+          <div onClick={e=>e.stopPropagation()} style={{width:"min(560px,100%)",background:PAPER,height:"100%",overflowY:"auto",boxShadow:"-20px 0 50px rgba(0,0,0,.25)"}}>
+            <div style={{background:`linear-gradient(160deg, ${rgb(scl(moodRGB(d?.mood??50),.5))}, ${moodColor(d?.mood??50)})`,color:"#fff",padding:"22px 22px 26px"}}>
+              <div style={{display:"flex",justifyContent:"space-between"}}>
+                <button onClick={()=>setDetail(null)} style={{...glassBtn,padding:"5px 12px",fontSize:13}}>← Close</button>
+                <div style={{display:"flex",gap:8}}>
+                  <button onClick={()=>refreshOne(ent)} disabled={busy} style={{...glassBtn,padding:"5px 12px",fontSize:13}}>↻ Refresh</button>
+                  {!isCat && <button onClick={()=>unsave(ent.id)} style={{...glassBtn,padding:"5px 12px",fontSize:13}}>Unfollow</button>}
+                </div>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:16,marginTop:16}}>
+                <Glyph mood={d?.mood} size={72}/>
+                <div><div style={{fontFamily:F.display,fontWeight:800,fontSize:26,lineHeight:1.05,textTransform:isCat?"none":"capitalize"}}>{label}</div>
+                <div style={{fontWeight:600,opacity:.92,marginTop:2}}>{moodWord(d?.mood)} · {d?.mood??"——"}/100</div></div>
+              </div>
+            </div>
+            <div style={{padding:"20px 22px 40px"}}>
+              <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,marginBottom:10}}>Trend over time</div>
+              <EntityGraph series={series}/>
+              {isCat ? (<>
+                <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,margin:"22px 0 10px"}}>What’s driving it</div>
+                {detailLoading && !d?.subs && <div style={{color:INK2,fontSize:13,padding:"12px 0",display:"flex",alignItems:"center",gap:10}}><Spinner size={18}/>Reading the subtopics…</div>}
+                <div style={{display:"grid",gap:10}}>
+                  {ent.subs.map(s=>{const sd=d?.subs?.[s.id];const subLoading=!sd&&detailLoading;return (
+                    <div key={s.id} className={subLoading?"busy-card":undefined} style={{background:CARD,border:`1px solid ${LINE}`,borderRadius:14,padding:"12px 14px"}}>
+                      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
+                        <div style={{display:"flex",alignItems:"center",gap:10}}>{subLoading?<Spinner size={26}/>:<Glyph mood={sd?.mood} size={30}/>}<div style={{fontWeight:700,fontSize:14}}>{s.label}</div></div>
+                        {subLoading?<div className="skel" style={{width:34,height:20}}/>:<div style={{fontFamily:F.display,fontWeight:800,fontSize:22,color:moodColor(sd?.mood)}}>{sd?.mood??"——"}</div>}</div>
+                      {sd?.items?.length>0 && <ul style={{listStyle:"none",margin:"10px 0 0",padding:0,display:"grid",gap:8}}>{sd.items.map((it,i)=><Headline key={i} it={it} small/>)}</ul>}
+                    </div>);})}
+                </div>
+              </>) : (<>
+                <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,margin:"22px 0 10px"}}>Recent headlines</div>
+                {detailLoading && !d?.items?.length && <div style={{color:INK2,fontSize:13,padding:"12px 0",display:"flex",alignItems:"center",gap:10}}><Spinner size={18}/>Reading the latest…</div>}
+                {d?.items?.length>0 && <ul style={{listStyle:"none",margin:0,padding:14,display:"grid",gap:9,background:CARD,border:`1px solid ${LINE}`,borderRadius:14}}>{d.items.map((it,i)=><Headline key={i} it={it}/>)}</ul>}
+              </>)}
+            </div>
+          </div>
+        </div>);
+      })()}
+
+      {/* SETTINGS */}
+      {showSettings && (
+        <div onClick={()=>setShowSettings(false)} style={{position:"fixed",inset:0,background:"rgba(20,26,36,.5)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,zIndex:60}}>
+          <div onClick={e=>e.stopPropagation()} style={{width:"min(440px,100%)",maxHeight:"86vh",overflowY:"auto",background:PAPER,borderRadius:20,boxShadow:"0 24px 60px rgba(0,0,0,.35)"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"18px 20px",borderBottom:`1px solid ${LINE}`}}>
+              <div style={{fontFamily:F.display,fontWeight:800,fontSize:20}}>Settings</div>
+              <button onClick={()=>setShowSettings(false)} style={{background:"transparent",fontSize:18,color:INK2}}>×</button>
+            </div>
+            <div style={{padding:"16px 20px 22px",display:"grid",gap:18}}>
+              <Row title="Reading depth" hint="Headlines sampled per topic. More = steadier read, slower refresh.">
+                <input className="num" type="number" min="2" max="6" value={perCat} onChange={e=>setPerCat(Math.max(2,Math.min(6,+e.target.value||4)))}/>
+              </Row>
+              <Row title="Refresh includes follows" hint="Update your followed subjects during the big Refresh.">
+                <input type="checkbox" checked={includeFollows} onChange={e=>setIncludeFollows(e.target.checked)} style={{accentColor:INK,width:18,height:18}}/>
+              </Row>
+              <Row title="Auto-refresh while open" hint="Re-read on a timer when the app is open.">
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <input type="checkbox" checked={auto} onChange={e=>setAuto(e.target.checked)} style={{accentColor:INK,width:18,height:18}}/>
+                  <input className="num" type="number" min="5" max="240" value={interval} onChange={e=>setIntervalMin(Math.max(5,Math.min(240,+e.target.value||60)))}/><span style={{fontSize:12,color:INK2}}>min</span>
+                </div>
+              </Row>
+              <div>
+                <div style={{fontWeight:700,fontSize:14,marginBottom:6}}>Hidden topics</div>
+                {hiddenCats.length===0 ? <div style={{fontSize:13,color:INK2}}>None hidden. Use Customize on the dashboard to hide topics.</div>
+                  : <div style={{display:"grid",gap:6}}>{hiddenCats.map(id=>{const c=CATEGORIES.find(x=>x.id===id);if(!c)return null;return (
+                    <div key={id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:CARD,border:`1px solid ${LINE}`,borderRadius:10,padding:"8px 12px"}}>
+                      <span style={{fontSize:13.5,fontWeight:600}}>{c.label}</span>
+                      <button onClick={()=>restoreCat(id)} style={{...primary(false),padding:"5px 12px",fontSize:12.5}}>Restore</button></div>);})}</div>}
+              </div>
+              <div>
+                <div style={{fontWeight:700,fontSize:14,marginBottom:8}}>Data</div>
+                <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                  <ConfirmButton label="Clear trend history" onConfirm={clearHistory} style={{background:CARD,border:`1px solid ${LINE}`,borderRadius:10,padding:"8px 13px",fontSize:13,fontWeight:700,color:INK}}/>
+                  <ConfirmButton label="Remove all follows" onConfirm={()=>setSaved([])} style={{background:CARD,border:`1px solid ${LINE}`,borderRadius:10,padding:"8px 13px",fontSize:13,fontWeight:700,color:"#B4453A"}}/>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SHARE */}
+      {share && (
+        <div onClick={()=>setShare(false)} style={{position:"fixed",inset:0,background:"rgba(20,26,36,.55)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,zIndex:70}}>
+          <div onClick={e=>e.stopPropagation()} style={{width:"min(420px,100%)"}}>
+            <div style={{borderRadius:24,overflow:"hidden",background:`linear-gradient(160deg, ${heroTop}, ${heroMid})`,color:"#fff",padding:28,textAlign:"center",boxShadow:"0 24px 60px rgba(0,0,0,.4)"}}>
+              <div style={{fontFamily:F.display,fontWeight:800,fontSize:18,opacity:.9}}>MoodCast</div>
+              <div style={{display:"flex",justifyContent:"center",margin:"10px 0"}}><Glyph mood={overall} size={92}/></div>
+              <div style={{fontFamily:F.display,fontWeight:800,fontSize:88,lineHeight:.9,letterSpacing:"-0.04em"}}>{overall??"——"}</div>
+              <div style={{fontFamily:F.display,fontWeight:700,fontSize:24,marginTop:2}}>{moodWord(overall)}</div>
+              {delta!=null&&<div style={{fontWeight:600,opacity:.92,marginTop:4}}>{delta>0?`▲ up ${delta}`:delta<0?`▼ down ${Math.abs(delta)}`:"steady"} since last</div>}
+              {(brightest||heaviest)&&<div style={{display:"flex",gap:8,justifyContent:"center",flexWrap:"wrap",marginTop:14}}>
+                {brightest&&<span style={shareMini}><Glyph mood={brightest.m} size={16}/>{brightest.c.label} {brightest.m}</span>}
+                {heaviest&&(!brightest||heaviest.c.id!==brightest.c.id)&&<span style={shareMini}><Glyph mood={heaviest.m} size={16}/>{heaviest.c.label} {heaviest.m}</span>}
+              </div>}
+              <div style={{fontSize:12,opacity:.85,marginTop:12}}>{today} · public mood</div>
+            </div>
+            <div style={{display:"flex",gap:10,marginTop:14}}>
+              <button onClick={copy} style={{...primary(false),flex:1,background:"#fff",color:INK,border:`1px solid ${LINE}`}}>{copied?"Copied ✓":"Copy summary"}</button>
+              <button onClick={()=>setShare(false)} style={{...primary(false),flex:1}}>Done</button>
+            </div>
+            <div style={{textAlign:"center",fontSize:12,color:"#fff",opacity:.85,marginTop:10}}>Screenshot the card to share it anywhere.</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  function Row({ title, hint, children }){
+    return (<div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:14}}>
+      <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14}}>{title}</div><div style={{fontSize:12,color:INK2,marginTop:2,lineHeight:1.4}}>{hint}</div></div>
+      <div style={{flexShrink:0,paddingTop:2}}>{children}</div></div>);
+  }
+  function Headline({ it, small }){
+    return (<li style={{borderTop:`1px solid ${LINE}`,paddingTop:8,display:"flex",justifyContent:"space-between",gap:10}}>
+      <div><div style={{fontSize:small?12.5:13.5,lineHeight:1.35,fontWeight:500}}>{it.url?<a href={it.url} target="_blank" rel="noreferrer">{it.title}</a>:it.title}</div>
+        {it.source&&<div style={{fontSize:11,color:"#9AA3AE",marginTop:2,fontWeight:600}}>{it.source}</div>}</div>
+      <div style={{fontFamily:F.display,fontWeight:800,fontSize:15,color:moodColor(toMood(it.score)),flexShrink:0}}>{toMood(it.score)}</div></li>);
+  }
+  function primary(disabled){ return {background:ACCENT,color:"#fff",borderRadius:12,padding:"10px 16px",fontSize:14,fontWeight:700,opacity:disabled?.5:1,cursor:disabled?"not-allowed":"pointer"}; }
+}
+function ctrlBtn(disabled){ return {background:CARD,border:`1px solid ${LINE}`,borderRadius:8,padding:"4px 9px",fontSize:13,fontWeight:700,color:INK,opacity:disabled?.4:1,cursor:disabled?"default":"pointer"}; }
+const glassBtn={background:"rgba(255,255,255,.18)",color:"#fff",border:"1px solid rgba(255,255,255,.35)",borderRadius:12,padding:"9px 16px",fontSize:14,fontWeight:700,backdropFilter:"blur(4px)"};
+const heroChip={display:"inline-flex",alignItems:"center",gap:7,background:"rgba(255,255,255,.16)",border:"1px solid rgba(255,255,255,.28)",borderRadius:999,padding:"4px 12px 4px 6px",fontSize:12.5,fontWeight:500,backdropFilter:"blur(3px)"};
+const shareMini={display:"inline-flex",alignItems:"center",gap:6,background:"rgba(255,255,255,.16)",borderRadius:999,padding:"4px 11px 4px 6px",fontSize:12,fontWeight:600};
