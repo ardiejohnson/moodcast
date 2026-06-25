@@ -67,12 +67,15 @@ const store = {
 };
 function parseJson(t){ if(!t)return null; let s=t.replace(/```json/gi,"").replace(/```/g,"").trim(); try{return JSON.parse(s);}catch{} const a=s.indexOf("{"),b=s.lastIndexOf("}"); if(a!==-1&&b>a){try{return JSON.parse(s.slice(a,b+1));}catch{return null;}} return null; }
 
+let PASSCODE = "";          // set from localStorage on mount / when the user enters it
+let onAuthFail = null;      // registered by the app to open the passcode gate on a 401
 async function callModel(system, user){
   const res = await fetch("/api/grade", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "x-moodcast-pass": PASSCODE },
     body: JSON.stringify({ system, user }),
   });
+  if(res.status===401){ if(onAuthFail)onAuthFail(); const e=new Error("unauthorized"); e.code=401; throw e; }
   if(!res.ok) throw new Error("HTTP "+res.status);
   const data = await res.json();
   return data.text || "";
@@ -179,6 +182,8 @@ export default function MoodCast(){
   const [editMode,setEditMode]=useState(false);
   const [showSettings,setShowSettings]=useState(false);
   const [loadedPrefs,setLoadedPrefs]=useState(false);
+  const [gate,setGate]=useState(false);
+  const [passInput,setPassInput]=useState("");
   const resultsRef=useRef(results); const timer=useRef(null);
   useEffect(()=>{resultsRef.current=results;},[results]);
 
@@ -187,12 +192,16 @@ export default function MoodCast(){
     const last=await store.get("ms:last"); if(last){setResults(last.results||{});setLastRun(last.t||null);}
     const r=await store.get("ms:recent"); if(r)setRecent(r);
     const sv=await store.get("ms:saved"); if(sv)setSaved(sv);
+    const pw=await store.get("ms:pass"); if(pw)PASSCODE=pw;
     const st=await store.get("ms:settings"); if(st){ if(st.perCat)setPerCat(st.perCat); if(typeof st.includeFollows==="boolean")setIncludeFollows(st.includeFollows);
       if(typeof st.interval==="number")setIntervalMin(st.interval); if(Array.isArray(st.hiddenCats))setHiddenCats(st.hiddenCats); if(Array.isArray(st.catOrder))setCatOrder(st.catOrder); }
     setLoadedPrefs(true);
   })();
+    onAuthFail=()=>setGate(true);
     setReduced(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    return ()=>{ onAuthFail=null; };
   },[]);
+  const submitPass=()=>{ const v=passInput.trim(); if(!v)return; PASSCODE=v; store.set("ms:pass",v); setGate(false); setPassInput(""); setError(null); };
   useEffect(()=>{ if(loadedPrefs)store.set("ms:settings",{perCat,includeFollows,interval,hiddenCats,catOrder}); },[perCat,includeFollows,interval,hiddenCats,catOrder,loadedPrefs]);
   useEffect(()=>{ if(loadedPrefs)store.set("ms:saved",saved); },[saved,loadedPrefs]);
 
@@ -625,6 +634,18 @@ export default function MoodCast(){
               <button onClick={()=>setShare(false)} style={{...primary(false),flex:1}}>Done</button>
             </div>
             <div style={{textAlign:"center",fontSize:12,color:"#fff",opacity:.85,marginTop:10}}>Screenshot the card to share it anywhere.</div>
+          </div>
+        </div>
+      )}
+
+      {/* PASSCODE GATE */}
+      {gate && (
+        <div style={{position:"fixed",inset:0,background:"rgba(20,26,36,.6)",backdropFilter:"blur(3px)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,zIndex:80}}>
+          <div style={{width:"min(380px,100%)",background:PAPER,borderRadius:20,padding:24,boxShadow:"0 24px 60px rgba(0,0,0,.4)"}}>
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}><Glyph mood={overall} size={30}/><div style={{fontFamily:F.display,fontWeight:800,fontSize:20}}>MoodCast</div></div>
+            <div style={{fontSize:14,color:INK2,lineHeight:1.5,marginBottom:14}}>This forecast is passcode-protected. Enter the passcode to take readings.</div>
+            <input autoFocus type="password" value={passInput} onChange={e=>setPassInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")submitPass();}} placeholder="Passcode" style={{width:"100%",border:`1px solid ${LINE}`,borderRadius:10,padding:"10px 12px",fontSize:15,background:"#fff",color:INK}}/>
+            <button onClick={submitPass} style={{...primary(!passInput.trim()),width:"100%",marginTop:12,display:"flex",justifyContent:"center"}}>Enter</button>
           </div>
         </div>
       )}
