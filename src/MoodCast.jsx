@@ -170,7 +170,7 @@ export default function MoodCast(){
   const [copied,setCopied]=useState(false);
   const [reduced,setReduced]=useState(false);
   // settings + view prefs
-  const [perCat,setPerCat]=useState(4);
+  const [perCat,setPerCat]=useState(3);
   const [includeFollows,setIncludeFollows]=useState(true);
   const [auto,setAuto]=useState(false);
   const [interval,setIntervalMin]=useState(60);
