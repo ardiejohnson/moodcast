@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { LineChart, Line, XAxis, YAxis, ReferenceLine, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import { LineChart, Line, XAxis, YAxis, ReferenceLine, ReferenceArea, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
 /* ----------------------------------------------------------------------
    MOODCAST - a weather app for public mood.
@@ -60,6 +60,20 @@ const glyphType=(m)=>m==null?"none":m<18?"storm":m<34?"rain":m<46?"cloud":m<60?"
 const toMood=(s)=>Math.round((Math.max(-100,Math.min(100,s))+100)/2);
 const appendSeries=(prev,mood,t,cap=160)=>{ if(mood==null)return prev||[]; return [...(prev||[]),{t,mood}].slice(-cap); };
 const slug=(s)=>"sub:"+s.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,42);
+
+/* AI-estimated monthly reconstruction of overall public/news sentiment (0 stormy .. 100 radiant),
+   generated once from the major events of each month. This is a rough reconstruction, NOT a
+   measurement — it seeds the trend chart with a long arc; real readings accumulate after it. */
+const SEED_MONTHLY = [
+  [2020,1,47],[2020,2,41],[2020,3,22],[2020,4,25],[2020,5,27],[2020,6,31],[2020,7,33],[2020,8,35],[2020,9,34],[2020,10,31],[2020,11,39],[2020,12,41],
+  [2021,1,30],[2021,2,38],[2021,3,43],[2021,4,45],[2021,5,49],[2021,6,51],[2021,7,46],[2021,8,34],[2021,9,41],[2021,10,45],[2021,11,47],[2021,12,39],
+  [2022,1,40],[2022,2,27],[2022,3,30],[2022,4,35],[2022,5,32],[2022,6,31],[2022,7,37],[2022,8,41],[2022,9,39],[2022,10,41],[2022,11,45],[2022,12,47],
+  [2023,1,46],[2023,2,43],[2023,3,41],[2023,4,47],[2023,5,49],[2023,6,51],[2023,7,49],[2023,8,45],[2023,9,49],[2023,10,31],[2023,11,36],[2023,12,41],
+  [2024,1,43],[2024,2,45],[2024,3,47],[2024,4,44],[2024,5,46],[2024,6,47],[2024,7,39],[2024,8,44],[2024,9,45],[2024,10,42],[2024,11,47],[2024,12,49],
+  [2025,1,49],[2025,2,47],[2025,3,49],[2025,4,43],[2025,5,46],[2025,6,49],[2025,7,51],[2025,8,49],[2025,9,51],[2025,10,49],[2025,11,51],[2025,12,53],
+  [2026,1,50],[2026,2,50],[2026,3,50],[2026,4,49],[2026,5,50],
+];
+const SEED_HISTORY = SEED_MONTHLY.map(([y,m,v])=>({ t: Date.UTC(y, m-1, 1), overall: v, est: true }));
 
 const store = {
   async get(k){ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):null; }catch{ return null; } },
@@ -168,6 +182,8 @@ export default function MoodCast(){
   const [answer,setAnswer]=useState(null);
   const [searchBusy,setSearchBusy]=useState(false);
   const [questionBusy,setQuestionBusy]=useState(false);
+  const [sunny,setSunny]=useState(null);
+  const [sunnyBusy,setSunnyBusy]=useState(false);
   const [recent,setRecent]=useState([]);
   const [share,setShare]=useState(false);
   const [copied,setCopied]=useState(false);
@@ -192,6 +208,7 @@ export default function MoodCast(){
     const last=await store.get("ms:last"); if(last){setResults(last.results||{});setLastRun(last.t||null);}
     const r=await store.get("ms:recent"); if(r)setRecent(r);
     const sv=await store.get("ms:saved"); if(sv)setSaved(sv);
+    const sn=await store.get("ms:sunny"); if(sn)setSunny(sn);
     const pw=await store.get("ms:pass"); if(pw)PASSCODE=pw;
     const st=await store.get("ms:settings"); if(st){ if(st.perCat)setPerCat(st.perCat); if(typeof st.includeFollows==="boolean")setIncludeFollows(st.includeFollows);
       if(typeof st.interval==="number")setIntervalMin(st.interval); if(Array.isArray(st.hiddenCats))setHiddenCats(st.hiddenCats); if(Array.isArray(st.catOrder))setCatOrder(st.catOrder); }
@@ -238,7 +255,17 @@ export default function MoodCast(){
     setBusy(false);
   },[busy,perCat]);
 
-  const readAll=()=>read(includeFollows?[...CATEGORIES,...saved]:[...CATEGORIES],true);
+  const readSunny=async()=>{
+    if(sunnyBusy)return; setSunnyBusy(true);
+    try{
+      const r=await gradeQuery("the single most uplifting, genuinely positive good-news story in the world today",5);
+      const items=(r.items||[]).filter(it=>Number.isFinite(it.score));
+      const best=items.length?items.reduce((a,b)=>b.score>a.score?b:a):null;
+      if(best){ const card={item:best,mood:toMood(best.score),t:Date.now()}; setSunny(card); store.set("ms:sunny",card); }
+    }catch{}
+    setSunnyBusy(false);
+  };
+  const readAll=()=>{ readSunny(); return read(includeFollows?[...CATEGORIES,...saved]:[...CATEGORIES],true); };
   const refreshOne=(ent)=>read([ent],false);
   useEffect(()=>{ if(timer.current){clearInterval(timer.current);timer.current=null;}
     if(auto)timer.current=setInterval(()=>read(includeFollows?[...CATEGORIES,...saved]:[...CATEGORIES],true),Math.max(1,interval)*60000);
@@ -316,7 +343,8 @@ export default function MoodCast(){
   const summaryText = `MoodCast — ${today}\nPublic mood: ${overall??"—"}/100 (${moodWord(overall)})${delta!=null?` ${delta>0?"▲ up "+delta:delta<0?"▼ down "+Math.abs(delta):"steady"} since last`:""}\n${brightest?`Brightest: ${brightest.c.label} (${brightest.m})`:""} · ${heaviest?`Heaviest: ${heaviest.c.label} (${heaviest.m})`:""}`;
   const copy=async()=>{ try{await navigator.clipboard.writeText(summaryText);setCopied(true);setTimeout(()=>setCopied(false),1800);}catch{setCopied(false);} };
   const heroTop=rgb(scl(moodRGB(overall??50),0.5)), heroMid=moodColor(overall??50);
-  const chartData=history.map(h=>({t:h.t,overall:h.overall}));
+  const chartData=[...SEED_HISTORY.map(s=>({t:s.t,overall:s.overall})),...history.map(h=>({t:h.t,overall:h.overall}))].sort((a,b)=>a.t-b.t);
+  const seedStart=SEED_HISTORY[0].t, seedEnd=SEED_HISTORY[SEED_HISTORY.length-1].t;
   const outBusy=searchBusy||questionBusy;
 
   return (
@@ -383,6 +411,30 @@ export default function MoodCast(){
         </section>
 
         {error&&<div style={{marginTop:14,padding:"10px 14px",border:`1px solid #E7B4A8`,background:"#FBEDE9",borderRadius:12,color:"#9A3B26",fontSize:13}}>{error}</div>}
+
+        {/* THE SUNNY SIDE */}
+        <section style={{marginTop:18}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,gap:10}}>
+            <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,letterSpacing:"0.02em",display:"flex",alignItems:"center",gap:8}}><Glyph mood={94} size={22}/>The Sunny Side</div>
+            <button onClick={readSunny} disabled={sunnyBusy} style={{background:CARD,border:`1px solid ${LINE}`,borderRadius:999,padding:"6px 13px",fontSize:12.5,fontWeight:700,color:INK,opacity:sunnyBusy?.6:1,cursor:sunnyBusy?"default":"pointer",display:"flex",alignItems:"center",gap:7}}>{sunnyBusy?<><Spinner size={13}/>Finding…</>:"Refresh"}</button>
+          </div>
+          <div style={{background:"linear-gradient(135deg, #FFF6E0 0%, #FFFDF7 100%)",border:"1px solid #F0E2BE",borderRadius:18,padding:18,boxShadow:"0 2px 12px rgba(244,169,59,.12)"}}>
+            {sunny ? (
+              <div style={{display:"flex",gap:16,alignItems:"flex-start"}}>
+                <div style={{flexShrink:0}}><Glyph mood={sunny.mood} size={52}/></div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:11,fontWeight:800,letterSpacing:"0.1em",color:"#B5860B",textTransform:"uppercase",marginBottom:6}}>Brightest story today</div>
+                  <div style={{fontFamily:F.display,fontWeight:700,fontSize:18,lineHeight:1.25}}>{sunny.item.url?<a href={sunny.item.url} target="_blank" rel="noreferrer">{sunny.item.title}</a>:sunny.item.title}</div>
+                  {sunny.item.summary&&<div style={{fontSize:13.5,color:INK2,marginTop:6,lineHeight:1.45}}>{sunny.item.summary}</div>}
+                  <div style={{fontSize:12,color:"#9AA3AE",marginTop:8,fontWeight:600}}>{sunny.item.source||""}{sunny.t?` · ${ago(sunny.t)}`:""}</div>
+                </div>
+                <div style={{fontFamily:F.display,fontWeight:800,fontSize:40,color:moodColor(sunny.mood),lineHeight:1,flexShrink:0}}>{sunny.mood}</div>
+              </div>
+            ) : (
+              <div style={{display:"flex",alignItems:"center",gap:12,fontSize:14,color:INK2}}>{sunnyBusy?<><Spinner size={18}/>Scanning for the day’s most uplifting story…</>:"Tap Refresh (or “Read today’s sky”) to surface the most positive story in the news right now."}</div>
+            )}
+          </div>
+        </section>
 
         {/* SEARCH / ASK */}
         <section style={{marginTop:18}}>
@@ -509,18 +561,20 @@ export default function MoodCast(){
         {/* OVERALL TREND */}
         <section style={{marginTop:24,background:CARD,border:`1px solid ${LINE}`,borderRadius:18,padding:"16px 14px 8px",boxShadow:"0 2px 10px rgba(27,35,48,.04)"}}>
           <div style={{fontFamily:F.display,fontWeight:700,fontSize:17,paddingLeft:6,marginBottom:6}}>Public mood over time</div>
-          {history.length<2 ? <div style={{padding:"34px 12px",textAlign:"center",color:INK2,fontSize:13}}>Your readings build a real mood history here — saved between visits and growing every time you check in.</div>
+          {chartData.length<2 ? <div style={{padding:"34px 12px",textAlign:"center",color:INK2,fontSize:13}}>Your readings build a real mood history here — saved between visits and growing every time you check in.</div>
           : <ResponsiveContainer width="100%" height={230}>
               <LineChart data={chartData} margin={{top:6,right:14,bottom:4,left:-20}}>
                 <defs><linearGradient id="mg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#F4A93B"/><stop offset="100%" stopColor="#46577A"/></linearGradient></defs>
                 <CartesianGrid stroke={LINE} vertical={false}/>
-                <XAxis dataKey="t" tickFormatter={t=>new Date(t).toLocaleDateString([],{month:"short",day:"numeric"})} stroke={LINE} tickLine={false} minTickGap={44}/>
+                <XAxis dataKey="t" tickFormatter={t=>new Date(t).toLocaleDateString([],{year:"2-digit",month:"short"})} stroke={LINE} tickLine={false} minTickGap={44}/>
                 <YAxis domain={[0,100]} ticks={[0,25,50,75,100]} stroke={LINE} tickLine={false}/>
+                <ReferenceArea x1={seedStart} x2={seedEnd} fill={INK} fillOpacity={0.05} ifOverflow="extendDomain" label={{value:"AI-estimated",position:"insideTopLeft",fontSize:10,fill:INK2}}/>
                 <ReferenceLine y={50} stroke={INK2} strokeDasharray="3 3"/>
-                <Tooltip contentStyle={{borderRadius:10,border:`1px solid ${LINE}`,fontFamily:F.ui,fontSize:12}} labelFormatter={t=>new Date(t).toLocaleString()}/>
+                <Tooltip contentStyle={{borderRadius:10,border:`1px solid ${LINE}`,fontFamily:F.ui,fontSize:12}} labelFormatter={t=>new Date(t).toLocaleDateString([],{year:"numeric",month:"long"})}/>
                 <Line type="monotone" dataKey="overall" name="Public mood" stroke="url(#mg)" strokeWidth={3} dot={false} isAnimationActive={!reduced}/>
               </LineChart>
             </ResponsiveContainer>}
+          <div style={{fontSize:11,color:"#9AA3AE",padding:"6px 6px 0",lineHeight:1.5}}>The shaded stretch is an <b style={{fontWeight:700}}>AI estimate</b> of overall news sentiment, reconstructed from the major events of each month — a rough arc, not a measurement. Readings you take add real data from today onward.</div>
         </section>
 
         <div style={{marginTop:16,fontSize:11,color:"#9AA3AE",textAlign:"center",maxWidth:560,marginLeft:"auto",marginRight:"auto",lineHeight:1.5}}>A playful read on the mood of the news, not a precise measurement. Scores are AI estimates of recent headlines, searched live.</div>
