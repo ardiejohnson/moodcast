@@ -362,6 +362,8 @@ function Spinner({ size=16, color=INK2, stroke=2.4 }){
     <circle cx="12" cy="12" r="9" stroke={color} strokeOpacity="0.22" strokeWidth={stroke}/>
     <path d="M21 12a9 9 0 0 0-9-9" stroke={color} strokeWidth={stroke} strokeLinecap="round"/></svg>);
 }
+// Animated "···" ellipsis to make in-progress work obvious.
+function Dots({ color=INK2 }){ return <span className="dots" style={{color,letterSpacing:1}}><b>·</b><b>·</b><b>·</b></span>; }
 function ConfirmButton({ label, onConfirm, style }){
   const [armed,setArmed]=useState(false);
   useEffect(()=>{ if(armed){const t=setTimeout(()=>setArmed(false),2600);return ()=>clearTimeout(t);} },[armed]);
@@ -511,13 +513,18 @@ function CommentsModal({ id, label, onClose, onCount }){
 }
 
 /* ---- Mood Map geometry (computed once) ---- */
-const MAP_W=980, MAP_H=476;
+// Natural Earth keeps continents shaped naturally (no Mercator polar bloat).
+// Fit to the INHABITED world (excluding Antarctica) so the map fills the frame
+// and is centered, rather than reserving empty space for the south pole.
+const MAP_W=980;
 const WORLD_FC = topoFeature(world110m, world110m.objects.countries);
-const MAP_PROJ = geoNaturalEarth1().fitSize([MAP_W,MAP_H], WORLD_FC);
+const FIT_FC = { type:"FeatureCollection", features: WORLD_FC.features.filter(f=>(f.properties&&f.properties.name)!=="Antarctica") };
+const MAP_PROJ = geoNaturalEarth1().fitWidth(MAP_W, FIT_FC);
 const MAP_PATH = geoPath(MAP_PROJ);
-const COUNTRY_PATHS = WORLD_FC.features
+const MAP_H = Math.ceil(MAP_PATH.bounds(FIT_FC)[1][1]); // tight height from the fitted bounds
+const COUNTRY_PATHS = FIT_FC.features
   .map(f=>({ id:String(f.id), name:(f.properties&&f.properties.name)||"", d:MAP_PATH(f) }))
-  .filter(c=>c.d && c.name && c.name!=="Antarctica");
+  .filter(c=>c.d && c.name);
 // Major countries seeded by the "Read major countries" button (matched by name).
 const BIG_COUNTRIES = ["United States of America","China","India","Russia","Brazil","United Kingdom","France","Germany","Japan","Ukraine","Israel","Mexico"];
 
@@ -527,7 +534,7 @@ function MoodMap({ moods, busy, onPick }){
   const ref=useRef(null);
   const [hover,setHover]=useState(null); // { id, name, mood, x, y }
   const move=(c,e)=>{ const r=ref.current?.getBoundingClientRect(); if(!r)return;
-    const ent=moods[c.id]; setHover({ id:c.id, name:c.name, mood:ent?ent.mood:null, x:e.clientX-r.left, y:e.clientY-r.top }); };
+    const ent=moods[c.id]; setHover({ id:c.id, name:c.name, mood:ent?ent.mood:null, x:e.clientX-r.left, y:e.clientY-r.top, w:r.width }); };
   return (
     <div ref={ref} onMouseLeave={()=>setHover(null)} style={{position:"relative",background:"linear-gradient(180deg,#EAF2FB,#F4F8FC)",border:`1px solid ${LINE}`,borderRadius:16,overflow:"hidden"}}>
       <svg viewBox={`0 0 ${MAP_W} ${MAP_H}`} width="100%" style={{display:"block"}}>
@@ -538,7 +545,7 @@ function MoodMap({ moods, busy, onPick }){
             onMouseMove={(e)=>move(c,e)} onClick={()=>onPick(c.id,c.name)}
             style={{cursor:"pointer",transition:"fill .5s ease, fill-opacity .3s"}}/>; })}
       </svg>
-      {hover && <div style={{position:"absolute",left:Math.min(hover.x+12,MAP_W-140),top:hover.y+12,pointerEvents:"none",background:"#fff",border:`1px solid ${LINE}`,borderRadius:9,padding:"6px 10px",fontSize:12,fontWeight:700,boxShadow:"0 6px 16px rgba(27,35,48,.16)",whiteSpace:"nowrap"}}>
+      {hover && <div style={{position:"absolute",left:Math.max(6,Math.min(hover.x+12,(hover.w||MAP_W)-150)),top:hover.y+12,pointerEvents:"none",background:"#fff",border:`1px solid ${LINE}`,borderRadius:9,padding:"6px 10px",fontSize:12,fontWeight:700,boxShadow:"0 6px 16px rgba(27,35,48,.16)",whiteSpace:"nowrap"}}>
         {hover.name}{hover.mood!=null?<> · <span style={{color:moodColor(hover.mood),fontWeight:800}}>{hover.mood}</span> <span style={{color:INK2,fontWeight:600}}>{moodWord(hover.mood)}</span></>:<span style={{color:INK2,fontWeight:600}}> · tap to read</span>}
       </div>}
     </div>
@@ -563,6 +570,8 @@ export default function MoodCast(){
   const [worldSel,setWorldSel]=useState(null);   // selected country panel
   const [worldBusy,setWorldBusy]=useState([]);   // codes currently reading
   const [worldAllBusy,setWorldAllBusy]=useState(false);
+  const [worldProgress,setWorldProgress]=useState(null); // { done, total } during "read all"
+  const stopWorldRef=useRef(false);
   const [error,setError]=useState(null);
   const [detail,setDetail]=useState(null);
   const [detailLoading,setDetailLoading]=useState(false);
@@ -750,6 +759,18 @@ export default function MoodCast(){
     for(const c of COUNTRY_PATHS.filter(c=>BIG_COUNTRIES.includes(c.name))){ if(!worldMoods[c.id]) await gradeCountry(c.id,c.name); }
     setWorldAllBusy(false);
   };
+  const readAllCountries=async()=>{
+    if(worldAllBusy)return;
+    const targets=COUNTRY_PATHS.filter(c=>!worldMoods[c.id]);
+    if(!targets.length)return;
+    setWorldAllBusy(true); stopWorldRef.current=false; setWorldProgress({done:0,total:targets.length});
+    for(let i=0;i<targets.length;i+=4){ // small concurrent batches to bound load
+      if(stopWorldRef.current)break;
+      await Promise.all(targets.slice(i,i+4).map(c=>gradeCountry(c.id,c.name)));
+      setWorldProgress({done:Math.min(i+4,targets.length),total:targets.length});
+    }
+    setWorldAllBusy(false); setWorldProgress(null);
+  };
   const worldCount=Object.keys(worldMoods).length;
   const refreshOne=(ent)=>read([ent],false);
   useEffect(()=>{ if(timer.current){clearInterval(timer.current);timer.current=null;}
@@ -886,7 +907,10 @@ export default function MoodCast(){
         .ms .skel{background:linear-gradient(90deg,#EDF0F4 25%,#DFE4EA 37%,#EDF0F4 63%);background-size:360px 100%;animation:ms-shimmer 1.15s linear infinite;border-radius:6px;}
         .ms .busy-card{position:relative;}
         .ms .busy-card::after{content:"";position:absolute;inset:0;border-radius:18px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.45),transparent);background-size:200% 100%;animation:ms-shimmer 1.3s linear infinite;pointer-events:none;}
-        @media (prefers-reduced-motion: reduce){.ms *{transition:none !important;}.ms .spin{animation:none !important;}.ms .skel{animation:none !important;background:#E5EAEF !important;}.ms .busy-card::after{display:none;}}
+        @keyframes ms-blink{0%,80%,100%{opacity:.18;}40%{opacity:1;}}
+        .ms .dots b{animation:ms-blink 1.2s infinite;font-weight:900;}
+        .ms .dots b:nth-child(2){animation-delay:.2s;} .ms .dots b:nth-child(3){animation-delay:.4s;}
+        @media (prefers-reduced-motion: reduce){.ms *{transition:none !important;}.ms .spin{animation:none !important;}.ms .skel{animation:none !important;background:#E5EAEF !important;}.ms .busy-card::after{display:none;}.ms .dots b{animation:none !important;opacity:.7;}}
       `}</style>
 
       <div className="ms" style={{maxWidth:1080,margin:"0 auto"}}>
@@ -1127,7 +1151,16 @@ export default function MoodCast(){
               <div style={{fontFamily:F.display,fontWeight:800,fontSize:18,display:"flex",alignItems:"center",gap:8}}>🗺️ Mood Map</div>
               <div style={{fontSize:12.5,color:INK2,fontWeight:600,marginTop:2}}>How the world feels, place by place. Tap any country to read its news.{worldCount>0?` · ${worldCount} read`:""}</div>
             </div>
-            <button onClick={readBigCountries} disabled={worldAllBusy} style={{...primary(worldAllBusy),padding:"8px 14px",display:"flex",alignItems:"center",gap:8}}>{worldAllBusy?<><Spinner size={14} color="#fff"/>Reading the world…</>:"Read major countries"}</button>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+              {worldProgress ? (
+                <button onClick={()=>{stopWorldRef.current=true;}} style={{background:CARD,border:`1px solid ${LINE}`,color:INK,borderRadius:12,padding:"8px 14px",fontSize:13,fontWeight:700,display:"flex",alignItems:"center",gap:8,cursor:"pointer"}}>
+                  <Spinner size={14} color={ACCENT}/>Reading {worldProgress.done}/{worldProgress.total} · Stop
+                </button>
+              ) : (<>
+                <button onClick={readBigCountries} disabled={worldAllBusy} style={{...primary(worldAllBusy),padding:"8px 14px",display:"flex",alignItems:"center",gap:8}}>{worldAllBusy?<><Spinner size={14} color="#fff"/>Reading<Dots color="#fff"/></>:"Read major countries"}</button>
+                <ConfirmButton label="Read all countries" onConfirm={readAllCountries} style={{background:CARD,border:`1px solid ${LINE}`,color:INK,borderRadius:12,padding:"8px 14px",fontSize:13,fontWeight:700,cursor:"pointer"}}/>
+              </>)}
+            </div>
           </div>
           <div style={{marginTop:12}}>
             <MoodMap moods={worldMoods} busy={worldBusy} onPick={onPickCountry}/>
@@ -1149,7 +1182,7 @@ export default function MoodCast(){
               </div>
             </div>
             <div style={{padding:"14px 16px",background:PAPER}}>
-              {worldSel.loading ? <div style={{display:"flex",alignItems:"center",gap:10,color:INK2,fontSize:13.5,padding:"6px 0"}}><Spinner size={18}/>Searching {worldSel.label}’s headlines and gauging the mood…</div>
+              {worldSel.loading ? <div style={{display:"flex",alignItems:"center",gap:10,color:INK,fontWeight:600,fontSize:13.5,padding:"6px 0"}}><Spinner size={18} color={ACCENT}/>Searching {worldSel.label}’s headlines and gauging the mood<Dots/></div>
                : worldSel.error ? <div style={{color:INK2,fontSize:13.5}}>Couldn’t reach {worldSel.label} right now — tap Refresh to try again.</div>
                : worldSel.items&&worldSel.items.length ? <ul style={{listStyle:"none",margin:0,padding:0,display:"grid",gap:9}}>{worldSel.items.map((it,i)=><Headline key={i} it={it}/>)}</ul>
                : <div style={{color:INK2,fontSize:13.5}}>No headlines surfaced for {worldSel.label}.</div>}
@@ -1222,19 +1255,19 @@ export default function MoodCast(){
               <EntityGraph series={series}/>
               {isCat ? (<>
                 <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,margin:"22px 0 10px"}}>What’s driving it</div>
-                {detailLoading && !d?.subs && <div style={{color:INK2,fontSize:13,padding:"12px 0",display:"flex",alignItems:"center",gap:10}}><Spinner size={18}/>Reading the subtopics…</div>}
+                {detailLoading && !d?.subs && <div style={{color:INK,fontSize:13.5,fontWeight:600,padding:"11px 14px",marginBottom:10,display:"flex",alignItems:"center",gap:10,background:"#EEF4FF",border:`1px solid #D6E4FB`,borderRadius:12}}><Spinner size={18} color={ACCENT}/>Reading {ent.subs.length} subtopics<Dots/></div>}
                 <div style={{display:"grid",gap:10}}>
                   {ent.subs.map(s=>{const sd=d?.subs?.[s.id];const subLoading=!sd&&detailLoading;return (
-                    <div key={s.id} className={subLoading?"busy-card":undefined} style={{background:CARD,border:`1px solid ${LINE}`,borderRadius:14,padding:"12px 14px"}}>
+                    <div key={s.id} className={subLoading?"busy-card":undefined} style={{background:CARD,border:`1px solid ${subLoading?"#CFE0FA":LINE}`,borderRadius:14,padding:"12px 14px"}}>
                       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
-                        <div style={{display:"flex",alignItems:"center",gap:10}}>{subLoading?<Spinner size={26}/>:<Glyph mood={sd?.mood} size={30}/>}<div style={{fontWeight:700,fontSize:14}}>{s.label}</div></div>
-                        {subLoading?<div className="skel" style={{width:34,height:20}}/>:<div style={{fontFamily:F.display,fontWeight:800,fontSize:22,color:moodColor(sd?.mood)}}>{sd?.mood??"——"}</div>}</div>
+                        <div style={{display:"flex",alignItems:"center",gap:10}}>{subLoading?<Spinner size={26} color={ACCENT}/>:<Glyph mood={sd?.mood} size={30}/>}<div style={{fontWeight:700,fontSize:14}}>{s.label}</div></div>
+                        {subLoading?<div style={{display:"flex",alignItems:"center",gap:6,fontSize:12.5,fontWeight:700,color:ACCENT}}>Reading<Dots color={ACCENT}/></div>:<div style={{fontFamily:F.display,fontWeight:800,fontSize:22,color:moodColor(sd?.mood)}}>{sd?.mood??"——"}</div>}</div>
                       {sd?.items?.length>0 && <ul style={{listStyle:"none",margin:"10px 0 0",padding:0,display:"grid",gap:8}}>{sd.items.map((it,i)=><Headline key={i} it={it} small/>)}</ul>}
                     </div>);})}
                 </div>
               </>) : (<>
                 <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,margin:"22px 0 10px"}}>Recent headlines</div>
-                {detailLoading && !d?.items?.length && <div style={{color:INK2,fontSize:13,padding:"12px 0",display:"flex",alignItems:"center",gap:10}}><Spinner size={18}/>Reading the latest…</div>}
+                {detailLoading && !d?.items?.length && <div style={{color:INK,fontSize:13.5,fontWeight:600,padding:"11px 14px",display:"flex",alignItems:"center",gap:10,background:"#EEF4FF",border:`1px solid #D6E4FB`,borderRadius:12}}><Spinner size={18} color={ACCENT}/>Reading the latest headlines<Dots/></div>}
                 {d?.items?.length>0 && <ul style={{listStyle:"none",margin:0,padding:14,display:"grid",gap:9,background:CARD,border:`1px solid ${LINE}`,borderRadius:14}}>{d.items.map((it,i)=><Headline key={i} it={it}/>)}</ul>}
               </>)}
             </div>
