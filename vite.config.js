@@ -124,6 +124,43 @@ function mockApiPlugin() {
         }
         next()
       })
+
+      // In-memory Today's Chatter: threads[id] = [ {cid,text,name,ts,author} ]
+      const threads = {}
+      let cseq = 0
+      server.middlewares.use('/api/comments', async (req, res, next) => {
+        res.setHeader('content-type', 'application/json')
+        const url = new URL(req.url, 'http://localhost')
+        if (req.method === 'GET') {
+          if (url.searchParams.get('ids') != null) {
+            const ids = (url.searchParams.get('ids') || '').split(',').filter(Boolean)
+            const counts = {}
+            for (const id of ids) counts[id] = (threads[id] || []).length
+            res.end(JSON.stringify({ counts, mocked: true }))
+            return
+          }
+          const id = url.searchParams.get('id') || ''
+          const voter = url.searchParams.get('voter') || ''
+          const comments = (threads[id] || []).slice().reverse()
+            .map((c) => ({ cid: c.cid, text: c.text, name: c.name || 'Anonymous', ts: c.ts, mine: voter && c.author === voter }))
+          res.end(JSON.stringify({ comments, count: comments.length, mocked: true }))
+          return
+        }
+        if (req.method === 'POST') {
+          const b = await readBody(req)
+          const id = b.id || ''
+          if (b.action === 'delete') { threads[id] = (threads[id] || []).filter((c) => c.cid !== b.cid); res.end('{"ok":true}'); return }
+          if (b.action === 'report') { res.end('{"ok":true}'); return }
+          const text = String(b.text || '').replace(/\s+/g, ' ').trim()
+          if (!text) { res.statusCode = 400; res.end('{"error":"Say something first."}'); return }
+          if (/(https?:\/\/|www\.)/i.test(text)) { res.statusCode = 400; res.end('{"error":"Links aren\'t allowed here."}'); return }
+          const c = { cid: 'm' + (++cseq), text: text.slice(0, 280), name: String(b.name || '').slice(0, 24) || 'Anonymous', ts: Date.now(), author: b.voter || '' }
+          threads[id] = threads[id] || []; threads[id].push(c)
+          res.end(JSON.stringify({ ok: true, comment: { cid: c.cid, text: c.text, name: c.name, ts: c.ts, mine: true }, mocked: true }))
+          return
+        }
+        next()
+      })
     },
   }
 }

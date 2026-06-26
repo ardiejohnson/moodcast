@@ -163,6 +163,38 @@ async function castVote(id,dir){
   return res.json(); // { id, mine, votes:{yay,boo} }
 }
 
+/* ---- Today's Chatter comments (see api/comments.js) ---- */
+async function fetchCommentCounts(ids){
+  const list=(ids||[]).filter(Boolean); if(!list.length)return {};
+  try{
+    const res=await fetch(`/api/comments?ids=${encodeURIComponent(list.join(","))}`,{cache:"no-store"});
+    if(!res.ok)return {}; const d=await res.json(); return d.counts||{};
+  }catch{ return {}; }
+}
+async function fetchComments(id){
+  try{
+    const res=await fetch(`/api/comments?id=${encodeURIComponent(id)}&voter=${encodeURIComponent(voterId())}`,{cache:"no-store"});
+    if(!res.ok)return []; const d=await res.json(); return d.comments||[];
+  }catch{ return []; }
+}
+async function postComment(id,text,name){
+  const res=await fetch("/api/comments",{
+    method:"POST",
+    headers:{ "Content-Type":"application/json", "x-moodcast-pass":PASSCODE },
+    body:JSON.stringify({ id, text, name, voter:voterId() }),
+  });
+  const d=await res.json().catch(()=>({})); if(!res.ok)throw new Error(d.error||("HTTP "+res.status));
+  return d.comment;
+}
+async function moderateComment(id,cid,action){
+  const res=await fetch("/api/comments",{
+    method:"POST",
+    headers:{ "Content-Type":"application/json", "x-moodcast-pass":PASSCODE },
+    body:JSON.stringify({ id, cid, action, voter:voterId() }),
+  });
+  if(!res.ok)throw new Error("HTTP "+res.status); return res.json();
+}
+
 /* ----------------------- visuals ----------------------- */
 function Glyph({ mood, size=56 }){
   const t = glyphType(mood); const sun = moodColor(mood); const cloud="#A6AEB9"; const cloudHi="#C3CAD3"; const rain="#6E8BB0"; const bolt="#E9B84A";
@@ -248,6 +280,76 @@ function VoteBar({ data, mine, onVote, compact=false }){
   );
 }
 
+// Small "💬 N" entry point that opens a card's Today's Chatter thread.
+function CommentButton({ count=0, onClick, compact=false }){
+  return (
+    <button onClick={(e)=>{e.stopPropagation();onClick();}} style={{display:"inline-flex",alignItems:"center",gap:6,marginTop:compact?8:10,
+      background:"transparent",border:"none",padding:0,cursor:"pointer",color:count?INK:INK2,fontSize:compact?12:12.5,fontWeight:700}}>
+      <span style={{fontSize:compact?13:14}}>💬</span>{count?`${count} comment${count>1?"s":""}`:"Comment"}
+    </button>
+  );
+}
+const cAgo=(t)=>{ if(!t)return""; const s=Math.floor((Date.now()-t)/1000); return s<60?"now":s<3600?`${Math.floor(s/60)}m`:s<86400?`${Math.floor(s/3600)}h`:`${Math.floor(s/86400)}d`; };
+// "Today's Chatter" — a daily comment thread for one card. Centered modal.
+function CommentsModal({ id, label, onClose, onCount }){
+  const [list,setList]=useState(null); // null = loading
+  const [text,setText]=useState("");
+  const [name,setName]=useState(()=>{ try{ return localStorage.getItem("ms:cname")||""; }catch{ return ""; } });
+  const [busy,setBusy]=useState(false);
+  const [err,setErr]=useState("");
+  const load=useCallback(async()=>{ const c=await fetchComments(id); setList(c); onCount&&onCount(id,c.length); },[id,onCount]);
+  useEffect(()=>{ load(); },[load]);
+  const submit=async()=>{
+    const t=text.trim(); if(!t||busy)return; setBusy(true); setErr("");
+    try{ const nm=name.trim(); if(nm){ try{ localStorage.setItem("ms:cname",nm); }catch{} }
+      const c=await postComment(id,t,nm); setText("");
+      setList(prev=>{ const next=[c,...(prev||[])]; onCount&&onCount(id,next.length); return next; });
+    }catch(e){ setErr(String(e.message||"Couldn't post").slice(0,80)); }
+    setBusy(false);
+  };
+  const remove=async(cid)=>{ setList(prev=>{ const next=(prev||[]).filter(c=>c.cid!==cid); onCount&&onCount(id,next.length); return next; });
+    try{ await moderateComment(id,cid,"delete"); }catch{} };
+  const report=async(cid)=>{ try{ await moderateComment(id,cid,"report"); }catch{}
+    setList(prev=>(prev||[]).map(c=>c.cid===cid?{...c,reported:true}:c)); };
+  return (
+    <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(20,26,36,.5)",backdropFilter:"blur(3px)",display:"flex",alignItems:"flex-end",justifyContent:"center",padding:"0 0",zIndex:75}}>
+      <div onClick={e=>e.stopPropagation()} style={{width:"min(520px,100%)",maxHeight:"82vh",display:"flex",flexDirection:"column",background:PAPER,borderRadius:"20px 20px 0 0",boxShadow:"0 -16px 50px rgba(0,0,0,.3)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"16px 18px",borderBottom:`1px solid ${LINE}`}}>
+          <div><div style={{fontFamily:F.display,fontWeight:800,fontSize:17}}>Today’s chatter</div>
+            <div style={{fontSize:12.5,color:INK2,fontWeight:600,textTransform:"capitalize"}}>{label} · resets daily</div></div>
+          <button onClick={onClose} style={{background:"transparent",fontSize:20,color:INK2,lineHeight:1}}>×</button>
+        </div>
+        <div style={{flex:1,overflowY:"auto",padding:"12px 18px",display:"flex",flexDirection:"column",gap:10}}>
+          {list===null && <div style={{color:INK2,fontSize:13,display:"flex",alignItems:"center",gap:8,padding:"10px 0"}}><Spinner size={16}/>Loading…</div>}
+          {list&&list.length===0 && <div style={{color:INK2,fontSize:13.5,padding:"14px 0",textAlign:"center"}}>No chatter yet today. Start it 👇</div>}
+          {list&&list.map(c=>(
+            <div key={c.cid} style={{background:CARD,border:`1px solid ${LINE}`,borderRadius:12,padding:"10px 12px"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8}}>
+                <span style={{fontWeight:700,fontSize:13,color:INK}}>{c.name}{c.mine&&<span style={{color:INK2,fontWeight:600}}> · you</span>}</span>
+                <span style={{fontSize:11,color:"#9AA3AE",fontWeight:600,whiteSpace:"nowrap"}}>{cAgo(c.ts)}</span>
+              </div>
+              <div style={{fontSize:14,color:INK,marginTop:3,lineHeight:1.4,wordBreak:"break-word"}}>{c.text}</div>
+              <div style={{marginTop:6}}>{c.mine
+                ? <button onClick={()=>remove(c.cid)} style={{background:"transparent",color:"#B4453A",fontSize:11.5,fontWeight:700,padding:0}}>Delete</button>
+                : <button onClick={()=>report(c.cid)} disabled={c.reported} style={{background:"transparent",color:c.reported?"#9AA3AE":INK2,fontSize:11.5,fontWeight:700,padding:0}}>{c.reported?"Reported":"Report"}</button>}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{borderTop:`1px solid ${LINE}`,padding:"12px 18px",display:"flex",flexDirection:"column",gap:8,background:PAPER}}>
+          {err&&<div style={{fontSize:12,color:"#9A3B26"}}>{err}</div>}
+          <input value={name} onChange={e=>setName(e.target.value)} placeholder="Name (optional)" maxLength={24}
+            style={{border:`1px solid ${LINE}`,borderRadius:10,padding:"8px 11px",fontSize:13,background:CARD,fontFamily:"inherit"}}/>
+          <div style={{display:"flex",gap:8}}>
+            <input value={text} onChange={e=>setText(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")submit();}} placeholder="Add to today’s chatter…" maxLength={280}
+              style={{flex:1,border:`1px solid ${LINE}`,borderRadius:10,padding:"10px 12px",fontSize:14,background:CARD,fontFamily:"inherit"}}/>
+            <button onClick={submit} disabled={busy||!text.trim()} style={{background:ACCENT,color:"#fff",borderRadius:10,padding:"0 18px",fontSize:14,fontWeight:700,display:"flex",alignItems:"center",opacity:(busy||!text.trim())?.5:1,cursor:(busy||!text.trim())?"not-allowed":"pointer"}}>{busy?<Spinner size={15} color="#fff"/>:"Post"}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* --------------------------------- APP --------------------------------- */
 export default function MoodCast(){
   const [results,setResults]=useState({});
@@ -259,6 +361,8 @@ export default function MoodCast(){
   const [fromCrowd,setFromCrowd]=useState(false);
   const [votes,setVotes]=useState({});      // { id: {yay,boo} }
   const [myVotes,setMyVotes]=useState({});  // { id: "yay"|"boo"|null }
+  const [commentCounts,setCommentCounts]=useState({}); // { id: n }
+  const [commentsFor,setCommentsFor]=useState(null);   // { id, label } | null
   const [error,setError]=useState(null);
   const [detail,setDetail]=useState(null);
   const [detailLoading,setDetailLoading]=useState(false);
@@ -339,13 +443,15 @@ export default function MoodCast(){
   const votableIds=["overall",...CATEGORIES.map(c=>c.id),...saved.map(s=>s.id)];
   const voteIdsKey=votableIds.join(",");
   const votesRef=useRef(voteIdsKey); votesRef.current=voteIdsKey;
-  const refreshVotes=useCallback(async()=>{ const r=await fetchVotes(votesRef.current.split(",").filter(Boolean));
-    setVotes(r.votes); setMyVotes(r.mine); },[]);
+  const refreshVotes=useCallback(async()=>{ const ids=votesRef.current.split(",").filter(Boolean);
+    const [v,counts]=await Promise.all([fetchVotes(ids),fetchCommentCounts(ids)]);
+    setVotes(v.votes); setMyVotes(v.mine); setCommentCounts(counts); },[]);
   useEffect(()=>{ refreshVotes();
     const tick=()=>{ if(typeof document==="undefined"||!document.hidden)refreshVotes(); };
-    const iv=setInterval(tick,20000); // light poll so counts feel live
+    const iv=setInterval(tick,20000); // light poll so votes & chatter counts feel live
     return ()=>clearInterval(iv);
   },[voteIdsKey,refreshVotes]);
+  const bumpCount=useCallback((id,n)=>setCommentCounts(c=>({...c,[id]:n})),[]);
   const handleVote=useCallback(async(id,dir)=>{
     const cur=votes[id]||{yay:0,boo:0}; const prevMine=myVotes[id]||null;
     const opt={...cur}; let mine;
@@ -539,6 +645,7 @@ export default function MoodCast(){
           <div style={{fontFamily:F.display,fontWeight:800,fontSize:15.5,color:INK}}>Does today feel <span style={{color:VOTE_SUN}}>brighter</span> or <span style={{color:VOTE_STORM}}>heavier</span> than {overall}?</div>
           <div style={{fontSize:12.5,color:INK2,marginTop:2,fontWeight:600}}>The forecast is the AI’s read — this is the crowd’s.</div>
           <VoteBar data={votes["overall"]} mine={myVotes["overall"]} onVote={(dir)=>handleVote("overall",dir)}/>
+          <CommentButton count={commentCounts["overall"]} onClick={()=>setCommentsFor({id:"overall",label:"Today’s mood"})}/>
         </div>}
 
         {error&&<div style={{marginTop:14,padding:"10px 14px",border:`1px solid #E7B4A8`,background:"#FBEDE9",borderRadius:12,color:"#9A3B26",fontSize:13}}>{error}</div>}
@@ -647,7 +754,8 @@ export default function MoodCast(){
                       <div style={{fontSize:12,color:INK2,fontWeight:600,display:"flex",alignItems:"center",gap:6}}>{loading?<><Spinner size={11}/>reading…</>:moodWord(m)}</div><Spark series={series} color={moodColor(m)}/></div>
                     {!editMode&&<div style={{fontSize:11.5,color:"#9AA3AE",marginTop:8,fontWeight:600}}>Tap for graph →</div>}
                   </button>
-                  {!editMode&&m!=null&&<VoteBar compact data={votes[s.id]} mine={myVotes[s.id]} onVote={(dir)=>handleVote(s.id,dir)}/>}
+                  {!editMode&&m!=null&&<><VoteBar compact data={votes[s.id]} mine={myVotes[s.id]} onVote={(dir)=>handleVote(s.id,dir)}/>
+                    <CommentButton compact count={commentCounts[s.id]} onClick={()=>setCommentsFor({id:s.id,label:s.subject})}/></>}
                 </div>);})}
             </div>
           </section>
@@ -687,7 +795,8 @@ export default function MoodCast(){
                 {!editMode&&has&&<div style={{fontSize:11.5,color:"#9AA3AE",marginTop:8,fontWeight:600}}>Tap for graph & why →</div>}
               </button>
               {!editMode&&!has&&!loading&&<button onClick={()=>refreshOne(c)} disabled={busy} style={{width:"100%",marginTop:12,background:ACCENT,color:"#fff",borderRadius:10,padding:"9px 0",fontSize:13,fontWeight:700,opacity:busy?.5:1,cursor:busy?"not-allowed":"pointer"}}>Get mood</button>}
-              {!editMode&&has&&<VoteBar compact data={votes[c.id]} mine={myVotes[c.id]} onVote={(dir)=>handleVote(c.id,dir)}/>}
+              {!editMode&&has&&<><VoteBar compact data={votes[c.id]} mine={myVotes[c.id]} onVote={(dir)=>handleVote(c.id,dir)}/>
+                <CommentButton compact count={commentCounts[c.id]} onClick={()=>setCommentsFor({id:c.id,label:c.label})}/></>}
             </div>);})}
         </section>
 
@@ -824,6 +933,9 @@ export default function MoodCast(){
           </div>
         </div>
       )}
+
+      {/* TODAY'S CHATTER */}
+      {commentsFor && <CommentsModal id={commentsFor.id} label={commentsFor.label} onClose={()=>setCommentsFor(null)} onCount={bumpCount}/>}
 
       {/* PASSCODE GATE */}
       {gate && (
