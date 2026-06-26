@@ -15,10 +15,40 @@
 
 import { Redis } from '@upstash/redis';
 
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN,
-});
+// Resolve the Upstash REST credentials regardless of how they were provisioned.
+// A direct Upstash console DB uses UPSTASH_REDIS_REST_*; Vercel's Storage
+// integration may name them KV_REST_API_* or apply a custom prefix
+// (e.g. STORAGE_*). We try the known names, then fall back to scanning env for
+// any matching pair — never picking a READ_ONLY token (we need write access).
+function resolveRedisEnv() {
+  const env = process.env;
+  const known = (suffixes) => {
+    for (const name of suffixes) if (env[name]) return env[name];
+    return undefined;
+  };
+  let url = known([
+    'UPSTASH_REDIS_REST_URL', 'KV_REST_API_URL',
+    'STORAGE_REST_API_URL', 'STORAGE_KV_REST_API_URL', 'REDIS_REST_API_URL',
+  ]);
+  let token = known([
+    'UPSTASH_REDIS_REST_TOKEN', 'KV_REST_API_TOKEN',
+    'STORAGE_REST_API_TOKEN', 'STORAGE_KV_REST_API_TOKEN', 'REDIS_REST_API_TOKEN',
+  ]);
+  if (!url) {
+    const k = Object.keys(env).find((x) => /REST_API_URL$|REDIS_REST_URL$/.test(x) && env[x]);
+    if (k) url = env[k];
+  }
+  if (!token) {
+    const k = Object.keys(env).find(
+      (x) => /REST_API_TOKEN$|REDIS_REST_TOKEN$/.test(x) && !/READ_ONLY/.test(x) && env[x]
+    );
+    if (k) token = env[k];
+  }
+  return { url, token };
+}
+
+const { url: REDIS_URL, token: REDIS_TOKEN } = resolveRedisEnv();
+const redis = new Redis({ url: REDIS_URL, token: REDIS_TOKEN });
 
 const LATEST_KEY = 'moodcast:latest';
 const WRITE_LIMIT = 30;        // max writes per IP per window
@@ -85,7 +115,7 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-moodcast-pass');
   if (req.method === 'OPTIONS') return res.status(204).end();
 
-  if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
+  if (!REDIS_URL || !REDIS_TOKEN) {
     return res.status(503).json({ error: 'board not configured' });
   }
 
