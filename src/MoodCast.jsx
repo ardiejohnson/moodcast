@@ -1,5 +1,8 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { LineChart, Line, XAxis, YAxis, ReferenceLine, ReferenceArea, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import { geoNaturalEarth1, geoPath } from "d3-geo";
+import { feature as topoFeature } from "topojson-client";
+import world110m from "./world-110m.json";
 
 /* ----------------------------------------------------------------------
    MOODCAST - a weather app for public mood.
@@ -199,6 +202,19 @@ function saveBoardLatest(results,overall){
 // Publish the featured story cards so every visitor sees the same ones.
 function saveBoardSunny(card){ return postBoard({ sunny:card }); }
 function saveBoardDark(card){ return postBoard({ dark:card }); }
+
+/* ---- Mood Map: shared mood per country (see api/world.js) ---- */
+async function fetchWorld(){
+  try{ const res=await fetch("/api/world",{cache:"no-store"}); if(!res.ok)return {};
+    const d=await res.json(); return d.countries||{};
+  }catch{ return {}; }
+}
+async function saveWorldCountry(code,mood,items,label){
+  try{ await fetch("/api/world",{ method:"POST",
+    headers:{ "Content-Type":"application/json", "x-moodcast-pass":PASSCODE },
+    body:JSON.stringify({ code, mood, items:(items||[]).slice(0,4), label }) });
+  }catch{ /* best-effort */ }
+}
 
 /* ---- Yay/Boo crowd votes (see api/vote.js) ---- */
 // Anonymous, stable per browser. Only used to dedup/switch a voter's own vote.
@@ -494,6 +510,41 @@ function CommentsModal({ id, label, onClose, onCount }){
   );
 }
 
+/* ---- Mood Map geometry (computed once) ---- */
+const MAP_W=980, MAP_H=476;
+const WORLD_FC = topoFeature(world110m, world110m.objects.countries);
+const MAP_PROJ = geoNaturalEarth1().fitSize([MAP_W,MAP_H], WORLD_FC);
+const MAP_PATH = geoPath(MAP_PROJ);
+const COUNTRY_PATHS = WORLD_FC.features
+  .map(f=>({ id:String(f.id), name:(f.properties&&f.properties.name)||"", d:MAP_PATH(f) }))
+  .filter(c=>c.d && c.name && c.name!=="Antarctica");
+// Major countries seeded by the "Read major countries" button (matched by name).
+const BIG_COUNTRIES = ["United States of America","China","India","Russia","Brazil","United Kingdom","France","Germany","Japan","Ukraine","Israel","Mexico"];
+
+// Flat interactive world choropleth. Countries fill with their mood color;
+// hover for a tooltip, click to read that country's news.
+function MoodMap({ moods, busy, onPick }){
+  const ref=useRef(null);
+  const [hover,setHover]=useState(null); // { id, name, mood, x, y }
+  const move=(c,e)=>{ const r=ref.current?.getBoundingClientRect(); if(!r)return;
+    const ent=moods[c.id]; setHover({ id:c.id, name:c.name, mood:ent?ent.mood:null, x:e.clientX-r.left, y:e.clientY-r.top }); };
+  return (
+    <div ref={ref} onMouseLeave={()=>setHover(null)} style={{position:"relative",background:"linear-gradient(180deg,#EAF2FB,#F4F8FC)",border:`1px solid ${LINE}`,borderRadius:16,overflow:"hidden"}}>
+      <svg viewBox={`0 0 ${MAP_W} ${MAP_H}`} width="100%" style={{display:"block"}}>
+        {COUNTRY_PATHS.map(c=>{ const ent=moods[c.id]; const isBusy=busy&&busy.includes(c.id); const hot=hover&&hover.id===c.id;
+          return <path key={c.id} d={c.d}
+            fill={ent?moodColor(ent.mood):"#D7DFEA"} fillOpacity={isBusy?0.45:(ent?0.95:0.8)}
+            stroke={hot?INK:"#FBFCFE"} strokeWidth={hot?1.1:0.5}
+            onMouseMove={(e)=>move(c,e)} onClick={()=>onPick(c.id,c.name)}
+            style={{cursor:"pointer",transition:"fill .5s ease, fill-opacity .3s"}}/>; })}
+      </svg>
+      {hover && <div style={{position:"absolute",left:Math.min(hover.x+12,MAP_W-140),top:hover.y+12,pointerEvents:"none",background:"#fff",border:`1px solid ${LINE}`,borderRadius:9,padding:"6px 10px",fontSize:12,fontWeight:700,boxShadow:"0 6px 16px rgba(27,35,48,.16)",whiteSpace:"nowrap"}}>
+        {hover.name}{hover.mood!=null?<> · <span style={{color:moodColor(hover.mood),fontWeight:800}}>{hover.mood}</span> <span style={{color:INK2,fontWeight:600}}>{moodWord(hover.mood)}</span></>:<span style={{color:INK2,fontWeight:600}}> · tap to read</span>}
+      </div>}
+    </div>
+  );
+}
+
 /* --------------------------------- APP --------------------------------- */
 export default function MoodCast(){
   const [results,setResults]=useState({});
@@ -508,6 +559,10 @@ export default function MoodCast(){
   const [commentCounts,setCommentCounts]=useState({}); // { id: n }
   const [commentsFor,setCommentsFor]=useState(null);   // { id, label } | null
   const [topArts,setTopArts]=useState({sunny:null,cloudy:null}); // crowd's picks
+  const [worldMoods,setWorldMoods]=useState({}); // { code: {mood,items,t,label} }
+  const [worldSel,setWorldSel]=useState(null);   // selected country panel
+  const [worldBusy,setWorldBusy]=useState([]);   // codes currently reading
+  const [worldAllBusy,setWorldAllBusy]=useState(false);
   const [error,setError]=useState(null);
   const [detail,setDetail]=useState(null);
   const [detailLoading,setDetailLoading]=useState(false);
@@ -671,6 +726,31 @@ export default function MoodCast(){
     setDarkBusy(false);
   };
   const readAll=()=>{ readSunny(); readDark(); return read(includeFollows?[...CATEGORIES,...saved]:[...CATEGORIES],true); };
+
+  // ---- Mood Map ----
+  useEffect(()=>{ fetchWorld().then(setWorldMoods); },[]);
+  const gradeCountry=useCallback(async(code,label)=>{
+    setWorldBusy(b=>b.includes(code)?b:[...b,code]);
+    try{ const r=await gradeQuery(`current public mood and the most significant recent news in ${label}`, Math.min(4,perCat));
+      if(r.mood!=null){ const entry={mood:r.mood,items:r.items,t:Date.now(),label};
+        setWorldMoods(m=>({...m,[code]:entry})); saveWorldCountry(code,r.mood,r.items,label); return entry; }
+    }catch{} finally{ setWorldBusy(b=>b.filter(x=>x!==code)); }
+    return null;
+  },[perCat]);
+  const onPickCountry=useCallback(async(code,label)=>{
+    const ex=worldMoods[code];
+    if(ex){ setWorldSel({code,label,mood:ex.mood,items:ex.items,loading:false}); return; }
+    if(worldBusy.includes(code))return;
+    setWorldSel({code,label,loading:true});
+    const entry=await gradeCountry(code,label);
+    setWorldSel(s=>s&&s.code===code?(entry?{code,label,mood:entry.mood,items:entry.items,loading:false}:{code,label,error:true,loading:false}):s);
+  },[worldMoods,worldBusy,gradeCountry]);
+  const readBigCountries=async()=>{
+    if(worldAllBusy)return; setWorldAllBusy(true);
+    for(const c of COUNTRY_PATHS.filter(c=>BIG_COUNTRIES.includes(c.name))){ if(!worldMoods[c.id]) await gradeCountry(c.id,c.name); }
+    setWorldAllBusy(false);
+  };
+  const worldCount=Object.keys(worldMoods).length;
   const refreshOne=(ent)=>read([ent],false);
   useEffect(()=>{ if(timer.current){clearInterval(timer.current);timer.current=null;}
     if(auto)timer.current=setInterval(()=>read(includeFollows?[...CATEGORIES,...saved]:[...CATEGORIES],true),Math.max(1,interval)*60000);
@@ -1038,6 +1118,43 @@ export default function MoodCast(){
               {!editMode&&!has&&!loading&&<button onClick={()=>refreshOne(c)} disabled={busy} style={{width:"100%",marginTop:12,background:ACCENT,color:"#fff",borderRadius:10,padding:"9px 0",fontSize:13,fontWeight:700,opacity:busy?.5:1,cursor:busy?"not-allowed":"pointer"}}>Get mood</button>}
               {!editMode&&has&&<CommentButton compact count={commentCounts[c.id]} onClick={()=>setCommentsFor({id:c.id,label:c.label})}/>}
             </div>);})}
+        </section>
+
+        {/* MOOD MAP */}
+        <section style={{marginTop:24,background:CARD,border:`1px solid ${LINE}`,borderRadius:18,padding:"16px 16px 14px",boxShadow:"0 2px 10px rgba(27,35,48,.04)"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10,marginBottom:4}}>
+            <div>
+              <div style={{fontFamily:F.display,fontWeight:800,fontSize:18,display:"flex",alignItems:"center",gap:8}}>🗺️ Mood Map</div>
+              <div style={{fontSize:12.5,color:INK2,fontWeight:600,marginTop:2}}>How the world feels, place by place. Tap any country to read its news.{worldCount>0?` · ${worldCount} read`:""}</div>
+            </div>
+            <button onClick={readBigCountries} disabled={worldAllBusy} style={{...primary(worldAllBusy),padding:"8px 14px",display:"flex",alignItems:"center",gap:8}}>{worldAllBusy?<><Spinner size={14} color="#fff"/>Reading the world…</>:"Read major countries"}</button>
+          </div>
+          <div style={{marginTop:12}}>
+            <MoodMap moods={worldMoods} busy={worldBusy} onPick={onPickCountry}/>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:10,marginTop:12,flexWrap:"wrap"}}>
+            <span style={{fontSize:11.5,color:INK2,fontWeight:700}}>Stormy</span>
+            <div style={{flex:1,minWidth:120,height:9,borderRadius:999,background:`linear-gradient(90deg, ${moodColor(8)}, ${moodColor(30)}, ${moodColor(50)}, ${moodColor(70)}, ${moodColor(92)})`}}/>
+            <span style={{fontSize:11.5,color:INK2,fontWeight:700}}>Radiant</span>
+            <span style={{fontSize:11,color:"#9AA3AE",marginLeft:6}}>Grey = not read yet</span>
+          </div>
+          {worldSel && <div style={{marginTop:14,border:`1px solid ${LINE}`,borderRadius:14,overflow:"hidden"}}>
+            <div style={{background:`linear-gradient(135deg, ${rgb(scl(moodRGB(worldSel.mood??50),.55))}, ${moodColor(worldSel.mood??50)})`,color:"#fff",padding:"14px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12}}>
+              <div style={{display:"flex",alignItems:"center",gap:12}}><Glyph mood={worldSel.mood} size={42}/>
+                <div><div style={{fontFamily:F.display,fontWeight:800,fontSize:20,lineHeight:1.1}}>{worldSel.label}</div>
+                  <div style={{fontWeight:600,opacity:.95,fontSize:13,marginTop:2}}>{worldSel.loading?"Reading the latest…":worldSel.error?"Couldn’t read this one":`${moodWord(worldSel.mood)} · ${worldSel.mood??"——"}/100`}</div></div></div>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={()=>onPickCountry(worldSel.code,worldSel.label)} disabled={worldBusy.includes(worldSel.code)} style={{...glassBtn,padding:"6px 12px",fontSize:13}}>↻ Refresh</button>
+                <button onClick={()=>setWorldSel(null)} style={{...glassBtn,padding:"6px 12px",fontSize:13}}>Close</button>
+              </div>
+            </div>
+            <div style={{padding:"14px 16px",background:PAPER}}>
+              {worldSel.loading ? <div style={{display:"flex",alignItems:"center",gap:10,color:INK2,fontSize:13.5,padding:"6px 0"}}><Spinner size={18}/>Searching {worldSel.label}’s headlines and gauging the mood…</div>
+               : worldSel.error ? <div style={{color:INK2,fontSize:13.5}}>Couldn’t reach {worldSel.label} right now — tap Refresh to try again.</div>
+               : worldSel.items&&worldSel.items.length ? <ul style={{listStyle:"none",margin:0,padding:0,display:"grid",gap:9}}>{worldSel.items.map((it,i)=><Headline key={i} it={it}/>)}</ul>
+               : <div style={{color:INK2,fontSize:13.5}}>No headlines surfaced for {worldSel.label}.</div>}
+            </div>
+          </div>}
         </section>
 
         {/* OVERALL TREND */}

@@ -206,6 +206,21 @@ function mockApiPlugin() {
         }
         next()
       })
+
+      // In-memory Mood Map: world[code] = {mood,items,t,label}
+      const world = {}
+      server.middlewares.use('/api/world', async (req, res, next) => {
+        res.setHeader('content-type', 'application/json')
+        if (req.method === 'GET') { res.end(JSON.stringify({ countries: world, mocked: true })); return }
+        if (req.method === 'POST') {
+          const b = await readBody(req)
+          if (!b.code || b.mood == null) { res.statusCode = 400; res.end('{"error":"bad"}'); return }
+          world[b.code] = { mood: b.mood, items: (b.items || []).slice(0, 4), t: Date.now(), label: String(b.label || '').slice(0, 60) }
+          res.end(JSON.stringify({ ok: true, code: b.code, entry: world[b.code], mocked: true }))
+          return
+        }
+        next()
+      })
     },
   }
 }
