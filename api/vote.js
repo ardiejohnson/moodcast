@@ -65,7 +65,29 @@ export default async function handler(req, res) {
 
   const day = dayStamp();
 
+  const RANK_KEY = `moodcast:artrank:${day}`;   // sorted set: net score (yay-boo) per article
+  const META_KEY = `moodcast:artmeta:${day}`;   // hash: artId -> {title,source,url}
+
   try {
+    // ---- crowd's sunniest / cloudiest article today -----------------------
+    if (req.method === 'GET' && req.query.top != null) {
+      const pickEnd = async (rev) => {
+        const arr = await redis.zrange(RANK_KEY, 0, 0, { rev, withScores: true });
+        if (!arr || !arr.length) return null;
+        const artId = arr[0]; const score = Number(arr[1]);
+        const info = await redis.hget(META_KEY, artId);
+        const m = info && typeof info === 'object' ? info : (() => { try { return JSON.parse(info); } catch { return null; } })();
+        const tally = await redis.hgetall(`moodcast:votes:${day}:${artId}`);
+        return { id: artId, score, yay: num(tally?.yay), boo: num(tally?.boo), ...(m || {}) };
+      };
+      const sunny = await pickEnd(true);   // highest net
+      const cloudy = await pickEnd(false); // lowest net
+      return res.status(200).json({
+        sunny: sunny && sunny.score > 0 ? sunny : null,
+        cloudy: cloudy && cloudy.score < 0 ? cloudy : null,
+      });
+    }
+
     // ---- batch read tallies for the visible cards -------------------------
     if (req.method === 'GET') {
       const ids = String(req.query.ids || '').split(',').map(cleanId).filter(Boolean).slice(0, MAX_IDS);
@@ -117,7 +139,25 @@ export default async function handler(req, res) {
       await redis.expire(votersKey, KEY_TTL_S);
 
       const tally = await redis.hgetall(votesKey);
-      return res.status(200).json({ id, mine, votes: { yay: Math.max(0, num(tally?.yay)), boo: Math.max(0, num(tally?.boo)) } });
+      const yay = Math.max(0, num(tally?.yay)), boo = Math.max(0, num(tally?.boo));
+
+      // Articles (id "art:…") feed the daily sunniest/cloudiest ranking. The
+      // client sends lightweight meta so the home card can render the winner.
+      if (id.startsWith('art:')) {
+        await redis.zadd(RANK_KEY, { score: yay - boo, member: id });
+        const meta = body?.meta;
+        if (meta && typeof meta === 'object') {
+          const clean = {
+            title: String(meta.title || '').slice(0, 160),
+            source: String(meta.source || '').slice(0, 50),
+            url: typeof meta.url === 'string' && /^https?:\/\//.test(meta.url) ? meta.url.slice(0, 400) : '',
+          };
+          if (clean.title) await redis.hset(META_KEY, { [id]: JSON.stringify(clean) });
+        }
+        await redis.expire(RANK_KEY, KEY_TTL_S);
+        await redis.expire(META_KEY, KEY_TTL_S);
+      }
+      return res.status(200).json({ id, mine, votes: { yay, boo } });
     }
 
     return res.status(405).json({ error: 'method not allowed' });

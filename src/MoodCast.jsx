@@ -153,14 +153,19 @@ async function fetchVotes(ids){
     const d=await res.json(); return { votes:d.votes||{}, mine:d.mine||{} };
   }catch{ return {votes:{},mine:{}}; }
 }
-async function castVote(id,dir){
+async function castVote(id,dir,meta){
   const res=await fetch("/api/vote",{
     method:"POST",
     headers:{ "Content-Type":"application/json", "x-moodcast-pass":PASSCODE },
-    body:JSON.stringify({ id, dir, voter:voterId() }),
+    body:JSON.stringify({ id, dir, voter:voterId(), ...(meta?{meta}:{}) }),
   });
   if(!res.ok)throw new Error("vote failed "+res.status);
   return res.json(); // { id, mine, votes:{yay,boo} }
+}
+async function fetchTopArticles(){
+  try{ const res=await fetch("/api/vote?top=1",{cache:"no-store"});
+    if(!res.ok)return {sunny:null,cloudy:null}; return res.json();
+  }catch{ return {sunny:null,cloudy:null}; }
 }
 
 /* ---- Today's Chatter comments (see api/comments.js) ---- */
@@ -270,34 +275,7 @@ function ConfirmButton({ label, onConfirm, style }){
   return <button style={style} onClick={()=>{ if(armed){setArmed(false);onConfirm();} else setArmed(true); }}>{armed?"Tap again to confirm":label}</button>;
 }
 
-// Crowd "tug-of-war": Yay ☀️ vs Boo ⛈️. The fill slides toward whichever side
-// is winning; tapping again toggles your vote off. `data` is {yay,boo}, `mine`
-// is "yay"|"boo"|null. Compact mode trims it for dense card grids.
 const VOTE_SUN = "#E9A23B", VOTE_STORM = "#5E7EA8";
-function VoteBar({ data, mine, onVote, compact=false }){
-  const yay=Math.max(0,data?.yay||0), boo=Math.max(0,data?.boo||0); const total=yay+boo;
-  const pct=total? Math.round((yay/total)*100) : 50; // sunny share of the bar
-  const [burst,setBurst]=useState(null);
-  const tap=(dir)=>{ setBurst(dir); setTimeout(()=>setBurst(null),420); onVote(dir); };
-  const chip=(dir)=>{ const on=mine===dir; const sun=dir==="yay";
-    return { display:"flex",alignItems:"center",gap:5,padding:compact?"4px 9px":"6px 12px",borderRadius:999,
-      fontSize:compact?12.5:13.5,fontWeight:800,cursor:"pointer",lineHeight:1,transition:"transform .12s",
-      transform:burst===dir?"scale(1.12)":"scale(1)",
-      background:on?(sun?VOTE_SUN:VOTE_STORM):CARD, color:on?"#fff":INK,
-      border:`1px solid ${on?(sun?VOTE_SUN:VOTE_STORM):LINE}` }; };
-  return (
-    <div onClick={(e)=>e.stopPropagation()} style={{marginTop:compact?10:14}}>
-      <div style={{position:"relative",height:compact?8:10,borderRadius:999,overflow:"hidden",background:VOTE_STORM}}>
-        <div style={{position:"absolute",inset:0,width:`${pct}%`,background:VOTE_SUN,transition:"width .5s cubic-bezier(.4,1.3,.5,1)"}}/>
-      </div>
-      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginTop:compact?7:9}}>
-        <button onClick={()=>tap("yay")} style={chip("yay")} title="Yay — brighter than it looks">☀️ Yay {yay>0&&<b>{yay}</b>}</button>
-        <span style={{fontSize:11.5,color:INK2,fontWeight:700}}>{total?`crowd ${pct} · ${total} vote${total>1?"s":""}`:"be the first"}</span>
-        <button onClick={()=>tap("boo")} style={chip("boo")} title="Boo — heavier than it looks">⛈️ Boo {boo>0&&<b>{boo}</b>}</button>
-      </div>
-    </div>
-  );
-}
 // Overall hero vote: "higher or lower than N?" with up/down arrows, styled for
 // the dark hero. Reuses the same yay/boo storage (yay = higher, boo = lower).
 function HeroVote({ overall, data, mine, onVote, count=0, onComment }){
@@ -318,10 +296,30 @@ function HeroVote({ overall, data, mine, onVote, count=0, onComment }){
     </div>
   );
 }
-// The crowd's number (from Yay/Boo), shown beside the AI mood for comparison.
-function CrowdBadge({ crowd }){
-  if(crowd==null)return null;
-  return <div title="The crowd’s read, from Yay/Boo votes" style={{display:"inline-flex",alignItems:"center",gap:3,fontSize:11,fontWeight:800,color:moodColor(crowd),background:CARD,border:`1px solid ${LINE}`,borderRadius:999,padding:"1px 7px",whiteSpace:"nowrap"}}>👥 {crowd}</div>;
+// Article reactions: tap ☀️ (sunshine) or ⛈️ (storm) on a specific story.
+// Reuses the yay/boo vote storage (yay = sunshine, boo = storm). `mine` is
+// "yay"|"boo"|null; tapping again toggles off.
+function ArticleReact({ data, mine, onVote }){
+  const yay=Math.max(0,data?.yay||0), boo=Math.max(0,data?.boo||0);
+  const pill=(dir,emoji,n,color)=>{ const on=mine===dir;
+    return <button onClick={(e)=>{e.stopPropagation();onVote(dir);}} title={dir==="yay"?"Sunshine — I like this":"Storm cloud — I don't"}
+      style={{display:"inline-flex",alignItems:"center",gap:4,padding:"3px 9px",borderRadius:999,fontSize:13,fontWeight:800,cursor:"pointer",lineHeight:1,
+        background:on?color:CARD,border:`1px solid ${on?color:LINE}`,color:on?"#fff":INK}}>
+      <span style={{fontSize:13.5}}>{emoji}</span>{n>0&&n}</button>; };
+  return <div style={{display:"inline-flex",gap:7,flexShrink:0}}>{pill("yay","☀️",yay,"#E9A23B")}{pill("boo","⛈️",boo,"#7E9AC0")}</div>;
+}
+// The crowd's most-loved / most-disliked article of the day, for the home card.
+function CrowdPick({ pick, kind }){
+  if(!pick||!pick.title)return null; const sunny=kind==="sunny";
+  const grad=sunny?"linear-gradient(135deg,#FFF6E0,#FFFDF7)":"linear-gradient(135deg,#EEF2F8,#FAFBFD)";
+  const edge=sunny?"#F0E2BE":"#D7E0EC";
+  return (
+    <a href={pick.url||undefined} target={pick.url?"_blank":undefined} rel="noreferrer" style={{display:"block",textDecoration:"none",color:INK,background:grad,border:`1px solid ${edge}`,borderRadius:14,padding:"12px 14px"}}>
+      <div style={{fontSize:11,fontWeight:800,letterSpacing:".08em",textTransform:"uppercase",color:sunny?"#B5860B":"#5E7196"}}>{sunny?"☀️ Crowd’s sunniest":"⛈️ Crowd’s cloudiest"}</div>
+      <div style={{fontFamily:F.display,fontWeight:700,fontSize:14.5,lineHeight:1.3,marginTop:5}}>{pick.title}</div>
+      <div style={{fontSize:11.5,color:INK2,marginTop:6,fontWeight:600}}>{pick.source||""}{pick.source?" · ":""}☀️ {pick.yay||0} · ⛈️ {pick.boo||0}</div>
+    </a>
+  );
 }
 
 // Small "💬 N" entry point that opens a card's Today's Chatter thread.
@@ -432,6 +430,7 @@ export default function MoodCast(){
   const [myVotes,setMyVotes]=useState({});  // { id: "yay"|"boo"|null }
   const [commentCounts,setCommentCounts]=useState({}); // { id: n }
   const [commentsFor,setCommentsFor]=useState(null);   // { id, label } | null
+  const [topArts,setTopArts]=useState({sunny:null,cloudy:null}); // crowd's picks
   const [error,setError]=useState(null);
   const [detail,setDetail]=useState(null);
   const [detailLoading,setDetailLoading]=useState(false);
@@ -513,8 +512,9 @@ export default function MoodCast(){
   const voteIdsKey=votableIds.join(",");
   const votesRef=useRef(voteIdsKey); votesRef.current=voteIdsKey;
   const refreshVotes=useCallback(async()=>{ const ids=votesRef.current.split(",").filter(Boolean);
-    const [v,counts]=await Promise.all([fetchVotes(ids),fetchCommentCounts(ids)]);
-    setVotes(v.votes); setMyVotes(v.mine); setCommentCounts(counts); },[]);
+    const [v,counts,top]=await Promise.all([fetchVotes(ids),fetchCommentCounts(ids),fetchTopArticles()]);
+    setVotes(prev=>({...prev,...v.votes})); setMyVotes(prev=>({...prev,...v.mine}));
+    setCommentCounts(prev=>({...prev,...counts})); setTopArts(top); },[]);
   useEffect(()=>{ refreshVotes();
     const tick=()=>{ if(typeof document==="undefined"||!document.hidden)refreshVotes(); };
     const iv=setInterval(tick,20000); // light poll so votes & chatter counts feel live
@@ -529,14 +529,15 @@ export default function MoodCast(){
       if(d?.subs)Object.values(d.subs).forEach(sd=>(sd?.items||[]).forEach(it=>arts.add(artId(it)))); }
     const ids=[...arts]; if(!ids.length)return;
     fetchCommentCounts(ids).then(counts=>setCommentCounts(c=>({...c,...counts})));
+    fetchVotes(ids).then(v=>{ setVotes(p=>({...p,...v.votes})); setMyVotes(p=>({...p,...v.mine})); });
   },[detail,results,sunny]);
-  const handleVote=useCallback(async(id,dir)=>{
+  const handleVote=useCallback(async(id,dir,meta)=>{
     const cur=votes[id]||{yay:0,boo:0}; const prevMine=myVotes[id]||null;
     const opt={...cur}; let mine;
     if(prevMine===dir){ opt[dir]=Math.max(0,(opt[dir]||0)-1); mine=null; }
     else{ opt[dir]=(opt[dir]||0)+1; if(prevMine)opt[prevMine]=Math.max(0,(opt[prevMine]||0)-1); mine=dir; }
     setVotes(v=>({...v,[id]:opt})); setMyVotes(m=>({...m,[id]:mine})); // optimistic
-    try{ const res=await castVote(id,dir); setVotes(v=>({...v,[id]:res.votes})); setMyVotes(m=>({...m,[id]:res.mine})); }
+    try{ const res=await castVote(id,dir,meta); setVotes(v=>({...v,[id]:res.votes})); setMyVotes(m=>({...m,[id]:res.mine})); }
     catch{ setVotes(v=>({...v,[id]:cur})); setMyVotes(m=>({...m,[id]:prevMine})); } // revert
   },[votes,myVotes]);
 
@@ -720,6 +721,14 @@ export default function MoodCast(){
           </div>
         </section>
 
+        {(topArts.sunny||topArts.cloudy) && <div style={{marginTop:14}}>
+          <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,letterSpacing:"0.02em",marginBottom:8}}>The crowd’s picks today</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",gap:12}}>
+            <CrowdPick pick={topArts.sunny} kind="sunny"/>
+            <CrowdPick pick={topArts.cloudy} kind="cloudy"/>
+          </div>
+        </div>}
+
         {error&&<div style={{marginTop:14,padding:"10px 14px",border:`1px solid #E7B4A8`,background:"#FBEDE9",borderRadius:12,color:"#9A3B26",fontSize:13}}>{error}</div>}
 
         {/* THE SUNNY SIDE */}
@@ -737,7 +746,10 @@ export default function MoodCast(){
                   <div style={{fontFamily:F.display,fontWeight:700,fontSize:18,lineHeight:1.25}}>{sunny.item.url?<a href={sunny.item.url} target="_blank" rel="noreferrer">{sunny.item.title}</a>:sunny.item.title}</div>
                   {sunny.item.summary&&<div style={{fontSize:13.5,color:INK2,marginTop:6,lineHeight:1.45}}>{sunny.item.summary}</div>}
                   <div style={{fontSize:12,color:"#9AA3AE",marginTop:8,fontWeight:600}}>{sunny.item.source||""}{sunny.t?` · ${ago(sunny.t)}`:""}</div>
-                  <CommentButton count={commentCounts[artId(sunny.item)]} onClick={()=>setCommentsFor({id:artId(sunny.item),label:sunny.item.title.slice(0,60)})}/>
+                  <div style={{display:"flex",alignItems:"center",gap:10,marginTop:8,flexWrap:"wrap"}}>
+                    <ArticleReact data={votes[artId(sunny.item)]} mine={myVotes[artId(sunny.item)]} onVote={(dir)=>handleVote(artId(sunny.item),dir,{title:sunny.item.title,source:sunny.item.source,url:sunny.item.url})}/>
+                    <CommentButton count={commentCounts[artId(sunny.item)]} onClick={()=>setCommentsFor({id:artId(sunny.item),label:sunny.item.title.slice(0,60)})}/>
+                  </div>
                 </div>
                 <div style={{fontFamily:F.display,fontWeight:800,fontSize:40,color:moodColor(sunny.mood),lineHeight:1,flexShrink:0}}>{sunny.mood}</div>
               </div>
@@ -821,14 +833,13 @@ export default function MoodCast(){
                   </>)}
                   <button onClick={()=>!editMode&&openEntity("sub",s)} style={{textAlign:"left",background:"transparent",width:"100%",padding:0,marginTop:editMode?12:0,cursor:editMode?"default":"pointer"}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",paddingRight:editMode?0:18}}>
-                      <Glyph mood={loading?null:m} size={40}/><div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4}}><div style={{fontFamily:F.display,fontWeight:800,fontSize:30,color:moodColor(m),lineHeight:1,minHeight:30,display:"flex",alignItems:"center"}}>{loading?<Spinner size={24}/>:(m??"——")}</div>{!loading&&<CrowdBadge crowd={crowdMood(votes[s.id])}/>}</div></div>
+                      <Glyph mood={loading?null:m} size={40}/><div style={{fontFamily:F.display,fontWeight:800,fontSize:30,color:moodColor(m),lineHeight:1,minHeight:30,display:"flex",alignItems:"center"}}>{loading?<Spinner size={24}/>:(m??"——")}</div></div>
                     <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,marginTop:10,textTransform:"capitalize",lineHeight:1.15}}>{s.subject}</div>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginTop:6,minHeight:18}}>
                       <div style={{fontSize:12,color:INK2,fontWeight:600,display:"flex",alignItems:"center",gap:6}}>{loading?<><Spinner size={11}/>reading…</>:moodWord(m)}</div><Spark series={series} color={moodColor(m)}/></div>
                     {!editMode&&<div style={{fontSize:11.5,color:"#9AA3AE",marginTop:8,fontWeight:600}}>Tap for graph →</div>}
                   </button>
-                  {!editMode&&m!=null&&<><VoteBar compact data={votes[s.id]} mine={myVotes[s.id]} onVote={(dir)=>handleVote(s.id,dir)}/>
-                    <CommentButton compact count={commentCounts[s.id]} onClick={()=>setCommentsFor({id:s.id,label:s.subject})}/></>}
+                  {!editMode&&m!=null&&<CommentButton compact count={commentCounts[s.id]} onClick={()=>setCommentsFor({id:s.id,label:s.subject})}/>}
                 </div>);})}
             </div>
           </section>
@@ -861,15 +872,14 @@ export default function MoodCast(){
               )}
               <button onClick={()=>{if(editMode)return; has?openEntity("cat",c):refreshOne(c);}} style={{textAlign:"left",background:"transparent",width:"100%",padding:0,cursor:editMode?"default":"pointer"}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",paddingRight:(!editMode&&has)?18:0}}>
-                  <Glyph mood={loading?null:m} size={44}/><div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4}}><div style={{fontFamily:F.display,fontWeight:800,fontSize:34,color:moodColor(m),lineHeight:1,minHeight:34,display:"flex",alignItems:"center"}}>{loading?<Spinner size={26}/>:(m??"——")}</div>{!loading&&<CrowdBadge crowd={crowdMood(votes[c.id])}/>}</div></div>
+                  <Glyph mood={loading?null:m} size={44}/><div style={{fontFamily:F.display,fontWeight:800,fontSize:34,color:moodColor(m),lineHeight:1,minHeight:34,display:"flex",alignItems:"center"}}>{loading?<Spinner size={26}/>:(m??"——")}</div></div>
                 <div style={{fontFamily:F.display,fontWeight:700,fontSize:16,marginTop:10,lineHeight:1.15}}>{c.label}</div>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginTop:6,minHeight:20}}>
                   <div style={{fontSize:12.5,color:INK2,fontWeight:600,display:"flex",alignItems:"center",gap:6}}>{loading?<><Spinner size={12}/>reading…</>:moodWord(m)}</div><Spark series={series} color={moodColor(m)}/></div>
                 {!editMode&&has&&<div style={{fontSize:11.5,color:"#9AA3AE",marginTop:8,fontWeight:600}}>Tap for graph & why →</div>}
               </button>
               {!editMode&&!has&&!loading&&<button onClick={()=>refreshOne(c)} disabled={busy} style={{width:"100%",marginTop:12,background:ACCENT,color:"#fff",borderRadius:10,padding:"9px 0",fontSize:13,fontWeight:700,opacity:busy?.5:1,cursor:busy?"not-allowed":"pointer"}}>Get mood</button>}
-              {!editMode&&has&&<><VoteBar compact data={votes[c.id]} mine={myVotes[c.id]} onVote={(dir)=>handleVote(c.id,dir)}/>
-                <CommentButton compact count={commentCounts[c.id]} onClick={()=>setCommentsFor({id:c.id,label:c.label})}/></>}
+              {!editMode&&has&&<CommentButton compact count={commentCounts[c.id]} onClick={()=>setCommentsFor({id:c.id,label:c.label})}/>}
             </div>);})}
         </section>
 
@@ -1033,9 +1043,10 @@ export default function MoodCast(){
     const aid=artId(it);
     return (<li style={{borderTop:`1px solid ${LINE}`,paddingTop:8,display:"flex",justifyContent:"space-between",gap:10}}>
       <div style={{minWidth:0}}><div style={{fontSize:small?12.5:13.5,lineHeight:1.35,fontWeight:500}}>{it.url?<a href={it.url} target="_blank" rel="noreferrer">{it.title}</a>:it.title}</div>
-        <div style={{display:"flex",alignItems:"center",gap:12,marginTop:3}}>
-          {it.source&&<div style={{fontSize:11,color:"#9AA3AE",fontWeight:600}}>{it.source}</div>}
-          <button onClick={()=>setCommentsFor({id:aid,label:it.title.slice(0,60)})} style={{display:"inline-flex",alignItems:"center",gap:4,background:"transparent",border:"none",padding:0,cursor:"pointer",color:commentCounts[aid]?INK:INK2,fontSize:11.5,fontWeight:700}}>💬 {commentCounts[aid]||"React"}</button>
+        {it.source&&<div style={{fontSize:11,color:"#9AA3AE",fontWeight:600,marginTop:3}}>{it.source}</div>}
+        <div style={{display:"flex",alignItems:"center",gap:10,marginTop:7,flexWrap:"wrap"}}>
+          <ArticleReact data={votes[aid]} mine={myVotes[aid]} onVote={(dir)=>handleVote(aid,dir,{title:it.title,source:it.source,url:it.url})}/>
+          <button onClick={()=>setCommentsFor({id:aid,label:it.title.slice(0,60)})} style={{display:"inline-flex",alignItems:"center",gap:4,background:"transparent",border:"none",padding:0,cursor:"pointer",color:commentCounts[aid]?INK:INK2,fontSize:11.5,fontWeight:700}}>💬 {commentCounts[aid]||"Comment"}</button>
         </div></div>
       <div style={{fontFamily:F.display,fontWeight:800,fontSize:15,color:moodColor(toMood(it.score)),flexShrink:0}}>{toMood(it.score)}</div></li>);
   }

@@ -96,9 +96,19 @@ function mockApiPlugin() {
       // In-memory Yay/Boo votes: tallies[id] = {yay,boo}; voters[id][voter] = dir
       const tallies = {}
       const voters = {}
+      const artMeta = {}
       server.middlewares.use('/api/vote', async (req, res, next) => {
         res.setHeader('content-type', 'application/json')
         const url = new URL(req.url, 'http://localhost')
+        if (req.method === 'GET' && url.searchParams.get('top') != null) {
+          const arts = Object.keys(tallies).filter((id) => id.startsWith('art:'))
+            .map((id) => ({ id, yay: tallies[id].yay, boo: tallies[id].boo, net: tallies[id].yay - tallies[id].boo, ...(artMeta[id] || {}) }))
+          const byNet = arts.slice().sort((a, b) => b.net - a.net)
+          const sunny = byNet[0] && byNet[0].net > 0 ? byNet[0] : null
+          const cloudy = byNet[byNet.length - 1] && byNet[byNet.length - 1].net < 0 ? byNet[byNet.length - 1] : null
+          res.end(JSON.stringify({ sunny, cloudy, mocked: true }))
+          return
+        }
         if (req.method === 'GET') {
           const ids = (url.searchParams.get('ids') || '').split(',').filter(Boolean)
           const voter = url.searchParams.get('voter') || ''
@@ -111,7 +121,7 @@ function mockApiPlugin() {
           return
         }
         if (req.method === 'POST') {
-          const { id, dir, voter } = await readBody(req)
+          const { id, dir, voter, meta } = await readBody(req)
           if (!id || !voter || (dir !== 'yay' && dir !== 'boo')) { res.statusCode = 400; res.end('{"error":"bad"}'); return }
           tallies[id] = tallies[id] || { yay: 0, boo: 0 }
           voters[id] = voters[id] || {}
@@ -119,6 +129,7 @@ function mockApiPlugin() {
           let mine = dir
           if (prev === dir) { tallies[id][dir] = Math.max(0, tallies[id][dir] - 1); delete voters[id][voter]; mine = null }
           else { tallies[id][dir]++; if (prev) tallies[id][prev] = Math.max(0, tallies[id][prev] - 1); voters[id][voter] = dir }
+          if (id.startsWith('art:') && meta && meta.title) artMeta[id] = { title: meta.title, source: meta.source || '', url: meta.url || '' }
           res.end(JSON.stringify({ id, mine, votes: tallies[id], mocked: true }))
           return
         }
