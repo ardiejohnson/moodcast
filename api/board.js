@@ -52,6 +52,7 @@ const redis = new Redis({ url: REDIS_URL, token: REDIS_TOKEN });
 
 const LATEST_KEY = 'moodcast:latest';
 const SUNNY_KEY = 'moodcast:sunny';
+const DARK_KEY = 'moodcast:dark';
 const WRITE_LIMIT = 30;        // max writes per IP per window
 const WRITE_WINDOW_S = 60;     // window length in seconds
 
@@ -96,8 +97,9 @@ function cleanReading(body) {
   return { results, overall };
 }
 
-// The Sunny Side card: { item: {title,source,url,summary,score}, mood, t }.
-function cleanSunny(raw) {
+// A featured story card: { item: {title,source,url,summary,score}, mood, t }.
+// Used for both The Sunny Side (brightest) and The Dark Side (heaviest).
+function cleanStoryCard(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const item = cleanItem(raw.item);
   if (!item || !item.title) return null;
@@ -130,11 +132,12 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
-      const [latest, sunny] = await Promise.all([
+      const [latest, sunny, dark] = await Promise.all([
         redis.get(LATEST_KEY), // @upstash/redis auto-parses JSON
         redis.get(SUNNY_KEY),
+        redis.get(DARK_KEY),
       ]);
-      return res.status(200).json({ latest: latest || null, sunny: sunny || null });
+      return res.status(200).json({ latest: latest || null, sunny: sunny || null, dark: dark || null });
     }
 
     if (req.method === 'POST') {
@@ -152,12 +155,14 @@ export default async function handler(req, res) {
       if (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = {}; } }
       body = body || {};
 
-      // A write may carry the full reading, the Sunny Side card, or both —
-      // readSunny() publishes the card on its own, separate from a full read.
-      const sunny = 'sunny' in body ? cleanSunny(body.sunny) : undefined;
+      // A write may carry the full reading, the Sunny/Dark Side cards, or any
+      // combination — the featured cards publish on their own, separate from a
+      // full read.
+      const sunny = 'sunny' in body ? cleanStoryCard(body.sunny) : undefined;
+      const dark = 'dark' in body ? cleanStoryCard(body.dark) : undefined;
       const { results, overall } = cleanReading(body);
       const hasReading = Object.keys(results).length > 0;
-      if (!hasReading && !sunny) {
+      if (!hasReading && !sunny && !dark) {
         return res.status(400).json({ error: 'Nothing to publish.' });
       }
 
@@ -165,6 +170,7 @@ export default async function handler(req, res) {
       const writes = [];
       if (hasReading) writes.push(redis.set(LATEST_KEY, JSON.stringify({ results, overall, t })));
       if (sunny) writes.push(redis.set(SUNNY_KEY, JSON.stringify(sunny)));
+      if (dark) writes.push(redis.set(DARK_KEY, JSON.stringify(dark)));
       await Promise.all(writes);
       return res.status(200).json({ ok: true, t });
     }

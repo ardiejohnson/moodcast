@@ -116,8 +116,8 @@ async function loadBoard(){
     const res=await fetch("/api/board",{cache:"no-store"});
     if(!res.ok)return {latest:null,sunny:null};
     const data=await res.json();
-    return { latest:data?.latest||null, sunny:data?.sunny||null }; // {results,overall,t} | {item,mood,t}
-  }catch{ return {latest:null,sunny:null}; }
+    return { latest:data?.latest||null, sunny:data?.sunny||null, dark:data?.dark||null };
+  }catch{ return {latest:null,sunny:null,dark:null}; }
 }
 async function postBoard(payload){
   try{
@@ -134,8 +134,9 @@ function saveBoardLatest(results,overall){
   for(const id in results){ const r=results[id]; if(!r)continue; slim[id]={mood:r.mood,items:r.items||[]}; }
   return postBoard({ results:slim, overall });
 }
-// Publish the Sunny Side card so every visitor sees the same brightest story.
+// Publish the featured story cards so every visitor sees the same ones.
 function saveBoardSunny(card){ return postBoard({ sunny:card }); }
+function saveBoardDark(card){ return postBoard({ dark:card }); }
 
 /* ---- Yay/Boo crowd votes (see api/vote.js) ---- */
 // Anonymous, stable per browser. Only used to dedup/switch a voter's own vote.
@@ -203,7 +204,9 @@ async function moderateComment(id,cid,action){
 /* ---- weather-emoji reactions (see api/react.js) ---- */
 const REACTIONS=["☀️","🌤️","⛈️","🌈"];
 // Stable id for an article so it can carry its own votes/comments/reactions.
-function artId(it){ const k=String(it?.url||it?.title||"").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,48); return "art:"+(k||"x"); }
+// Hash the FULL url/title so long, near-identical URLs don't collide (a slug
+// slice truncated past the unique suffix would map several articles to one id).
+function artId(it){ const s=String(it?.url||it?.title||"x"); let h=0; for(let i=0;i<s.length;i++)h=(Math.imul(h,31)+s.charCodeAt(i))|0; return "art:"+Math.abs(h).toString(36); }
 async function fetchReactions(ids){
   const list=(ids||[]).filter(Boolean); if(!list.length)return {reactions:{},mine:{}};
   try{ const res=await fetch(`/api/react?ids=${encodeURIComponent(list.join(","))}&voter=${encodeURIComponent(voterId())}`,{cache:"no-store"});
@@ -441,6 +444,8 @@ export default function MoodCast(){
   const [questionBusy,setQuestionBusy]=useState(false);
   const [sunny,setSunny]=useState(null);
   const [sunnyBusy,setSunnyBusy]=useState(false);
+  const [dark,setDark]=useState(null);
+  const [darkBusy,setDarkBusy]=useState(false);
   const [recent,setRecent]=useState([]);
   const [share,setShare]=useState(false);
   const [copied,setCopied]=useState(false);
@@ -468,21 +473,24 @@ export default function MoodCast(){
     const sv=await store.get("ms:saved"); if(sv)setSaved(sv);
     const sn=await store.get("ms:sunny"); if(sn)setSunny(sn);
     const localSunnyT=sn&&sn.t?sn.t:0;
+    const dk=await store.get("ms:dark"); if(dk)setDark(dk);
+    const localDarkT=dk&&dk.t?dk.t:0;
     const pw=await store.get("ms:pass"); if(pw)PASSCODE=pw;
     const st=await store.get("ms:settings"); if(st){ if(st.perCat)setPerCat(st.perCat); if(typeof st.includeFollows==="boolean")setIncludeFollows(st.includeFollows);
       if(typeof st.interval==="number")setIntervalMin(st.interval); if(Array.isArray(st.hiddenCats))setHiddenCats(st.hiddenCats); if(Array.isArray(st.catOrder))setCatOrder(st.catOrder); }
     setLoadedPrefs(true);
     // Shared board: if the crowd's latest reading is newer than this device's,
     // show it. Merge over local entries so personal trend sparklines survive.
-    const { latest, sunny }=await loadBoard();
+    const { latest, sunny, dark }=await loadBoard();
     if(latest&&latest.t&&latest.t>localT){
       setResults(prev=>{ const next={...prev};
         for(const id in (latest.results||{})){ const b=latest.results[id]; next[id]={...next[id],mood:b.mood,items:b.items||[]}; }
         return next; });
       setLastRun(latest.t); setFromCrowd(true);
     }
-    // The Sunny Side is shared too — take the crowd's if it's newer than local.
+    // The featured cards are shared too — take the crowd's if newer than local.
     if(sunny&&sunny.t&&sunny.t>localSunnyT){ setSunny(sunny); store.set("ms:sunny",sunny); }
+    if(dark&&dark.t&&dark.t>localDarkT){ setDark(dark); store.set("ms:dark",dark); }
   })();
     onAuthFail=()=>setGate(true);
     setReduced(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches);
@@ -524,13 +532,14 @@ export default function MoodCast(){
   // Pull comment counts for article-level threads (drill-down headlines + Sunny Side).
   useEffect(()=>{ const arts=new Set();
     if(sunny?.item)arts.add(artId(sunny.item));
+    if(dark?.item)arts.add(artId(dark.item));
     if(detail){ const d=resultsRef.current[detail.id];
       (d?.items||[]).forEach(it=>arts.add(artId(it)));
       if(d?.subs)Object.values(d.subs).forEach(sd=>(sd?.items||[]).forEach(it=>arts.add(artId(it)))); }
     const ids=[...arts]; if(!ids.length)return;
     fetchCommentCounts(ids).then(counts=>setCommentCounts(c=>({...c,...counts})));
     fetchVotes(ids).then(v=>{ setVotes(p=>({...p,...v.votes})); setMyVotes(p=>({...p,...v.mine})); });
-  },[detail,results,sunny]);
+  },[detail,results,sunny,dark]);
   const handleVote=useCallback(async(id,dir,meta)=>{
     const cur=votes[id]||{yay:0,boo:0}; const prevMine=myVotes[id]||null;
     const opt={...cur}; let mine;
@@ -575,7 +584,17 @@ export default function MoodCast(){
     }catch{}
     setSunnyBusy(false);
   };
-  const readAll=()=>{ readSunny(); return read(includeFollows?[...CATEGORIES,...saved]:[...CATEGORIES],true); };
+  const readDark=async()=>{
+    if(darkBusy)return; setDarkBusy(true);
+    try{
+      const r=await gradeQuery("the single heaviest, most distressing or saddest serious news story in the world today",5);
+      const items=(r.items||[]).filter(it=>Number.isFinite(it.score));
+      const worst=items.length?items.reduce((a,b)=>b.score<a.score?b:a):null;
+      if(worst){ const card={item:worst,mood:toMood(worst.score),t:Date.now()}; setDark(card); store.set("ms:dark",card); saveBoardDark(card); }
+    }catch{}
+    setDarkBusy(false);
+  };
+  const readAll=()=>{ readSunny(); readDark(); return read(includeFollows?[...CATEGORIES,...saved]:[...CATEGORIES],true); };
   const refreshOne=(ent)=>read([ent],false);
   useEffect(()=>{ if(timer.current){clearInterval(timer.current);timer.current=null;}
     if(auto)timer.current=setInterval(()=>read(includeFollows?[...CATEGORIES,...saved]:[...CATEGORIES],true),Math.max(1,interval)*60000);
@@ -755,6 +774,34 @@ export default function MoodCast(){
               </div>
             ) : (
               <div style={{display:"flex",alignItems:"center",gap:12,fontSize:14,color:INK2}}>{sunnyBusy?<><Spinner size={18}/>Scanning for the day’s most uplifting story…</>:"Tap Refresh (or “Read today’s sky”) to surface the most positive story in the news right now."}</div>
+            )}
+          </div>
+        </section>
+
+        {/* THE DARK SIDE */}
+        <section style={{marginTop:14}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,gap:10}}>
+            <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,letterSpacing:"0.02em",display:"flex",alignItems:"center",gap:8}}><Glyph mood={10} size={22}/>The Dark Side</div>
+            <button onClick={readDark} disabled={darkBusy} style={{background:CARD,border:`1px solid ${LINE}`,borderRadius:999,padding:"6px 13px",fontSize:12.5,fontWeight:700,color:INK,opacity:darkBusy?.6:1,cursor:darkBusy?"default":"pointer",display:"flex",alignItems:"center",gap:7}}>{darkBusy?<><Spinner size={13}/>Finding…</>:"Refresh"}</button>
+          </div>
+          <div style={{background:"linear-gradient(135deg, #EAEEF4 0%, #FAFBFD 100%)",border:"1px solid #D3DBE6",borderRadius:18,padding:18,boxShadow:"0 2px 12px rgba(94,126,168,.12)"}}>
+            {dark ? (
+              <div style={{display:"flex",gap:16,alignItems:"flex-start"}}>
+                <div style={{flexShrink:0}}><Glyph mood={dark.mood} size={52}/></div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:11,fontWeight:800,letterSpacing:"0.1em",color:"#5E7196",textTransform:"uppercase",marginBottom:6}}>Heaviest story today</div>
+                  <div style={{fontFamily:F.display,fontWeight:700,fontSize:18,lineHeight:1.25}}>{dark.item.url?<a href={dark.item.url} target="_blank" rel="noreferrer">{dark.item.title}</a>:dark.item.title}</div>
+                  {dark.item.summary&&<div style={{fontSize:13.5,color:INK2,marginTop:6,lineHeight:1.45}}>{dark.item.summary}</div>}
+                  <div style={{fontSize:12,color:"#9AA3AE",marginTop:8,fontWeight:600}}>{dark.item.source||""}{dark.t?` · ${ago(dark.t)}`:""}</div>
+                  <div style={{display:"flex",alignItems:"center",gap:10,marginTop:8,flexWrap:"wrap"}}>
+                    <ArticleReact data={votes[artId(dark.item)]} mine={myVotes[artId(dark.item)]} onVote={(dir)=>handleVote(artId(dark.item),dir,{title:dark.item.title,source:dark.item.source,url:dark.item.url})}/>
+                    <CommentButton count={commentCounts[artId(dark.item)]} onClick={()=>setCommentsFor({id:artId(dark.item),label:dark.item.title.slice(0,60)})}/>
+                  </div>
+                </div>
+                <div style={{fontFamily:F.display,fontWeight:800,fontSize:40,color:moodColor(dark.mood),lineHeight:1,flexShrink:0}}>{dark.mood}</div>
+              </div>
+            ) : (
+              <div style={{display:"flex",alignItems:"center",gap:12,fontSize:14,color:INK2}}>{darkBusy?<><Spinner size={18}/>Scanning for the day’s heaviest story…</>:"Tap Refresh (or “Read today’s sky”) to surface the most sobering story in the news right now."}</div>
             )}
           </div>
         </section>

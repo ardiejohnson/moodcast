@@ -76,17 +76,18 @@ function mockApiPlugin() {
         })
       })
 
-      let boardSunny = null
+      let boardSunny = null, boardDark = null
       server.middlewares.use('/api/board', async (req, res, next) => {
         res.setHeader('content-type', 'application/json')
         if (req.method === 'GET') {
-          res.end(JSON.stringify({ latest: boardLatest, sunny: boardSunny, mocked: true }))
+          res.end(JSON.stringify({ latest: boardLatest, sunny: boardSunny, dark: boardDark, mocked: true }))
           return
         }
         if (req.method === 'POST') {
           const body = await readBody(req)
           if (body.results) boardLatest = { results: body.results, overall: body.overall ?? null, t: Date.now() }
           if (body.sunny) boardSunny = { ...body.sunny, t: Date.now() }
+          if (body.dark) boardDark = { ...body.dark, t: Date.now() }
           res.end(JSON.stringify({ ok: true, t: Date.now(), mocked: true }))
           return
         }
