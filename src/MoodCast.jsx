@@ -565,6 +565,7 @@ export default function MoodCast(){
   const [myVotes,setMyVotes]=useState({});  // { id: "yay"|"boo"|null }
   const [commentCounts,setCommentCounts]=useState({}); // { id: n }
   const [commentsFor,setCommentsFor]=useState(null);   // { id, label } | null
+  const [articlesModal,setArticlesModal]=useState(null); // { label, mood, items } | null
   const [topArts,setTopArts]=useState({sunny:null,cloudy:null}); // crowd's picks
   const [worldMoods,setWorldMoods]=useState({}); // { code: {mood,items,t,label} }
   const [worldSel,setWorldSel]=useState(null);   // selected country panel
@@ -941,8 +942,8 @@ export default function MoodCast(){
               </div>
               <div style={{fontSize:15,opacity:.92,marginTop:10,maxWidth:440,lineHeight:1.45,fontWeight:500}}>{heroSentence}</div>
               {(brightest||heaviest) && <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:12}}>
-                {brightest && <span style={heroChip}><Glyph mood={brightest.m} size={18}/><b style={{fontWeight:700}}>Brightest</b> {brightest.c.label} · {brightest.m}</span>}
-                {heaviest && (!brightest||heaviest.c.id!==brightest.c.id) && <span style={heroChip}><Glyph mood={heaviest.m} size={18}/><b style={{fontWeight:700}}>Heaviest</b> {heaviest.c.label} · {heaviest.m}</span>}
+                {brightest && <button onClick={()=>setArticlesModal({label:brightest.c.label,mood:brightest.m,items:results[brightest.c.id]?.items||[]})} style={{...heroChip,cursor:"pointer"}}><Glyph mood={brightest.m} size={18}/><b style={{fontWeight:700}}>Brightest</b> {brightest.c.label} · {brightest.m} <span style={{opacity:.7}}>›</span></button>}
+                {heaviest && (!brightest||heaviest.c.id!==brightest.c.id) && <button onClick={()=>setArticlesModal({label:heaviest.c.label,mood:heaviest.m,items:results[heaviest.c.id]?.items||[]})} style={{...heroChip,cursor:"pointer"}}><Glyph mood={heaviest.m} size={18}/><b style={{fontWeight:700}}>Heaviest</b> {heaviest.c.label} · {heaviest.m} <span style={{opacity:.7}}>›</span></button>}
               </div>}
             </div>
             <div style={{filter:"drop-shadow(0 6px 14px rgba(0,0,0,.2))"}}><Glyph mood={overall} size={108}/></div>
@@ -1343,6 +1344,23 @@ export default function MoodCast(){
 
       {/* TODAY'S CHATTER */}
       {commentsFor && <CommentsModal id={commentsFor.id} label={commentsFor.label} onClose={()=>setCommentsFor(null)} onCount={bumpCount}/>}
+
+      {/* BRIGHTEST / HEAVIEST ARTICLES */}
+      {articlesModal && <div onClick={()=>setArticlesModal(null)} style={{position:"fixed",inset:0,background:"rgba(20,26,36,.5)",backdropFilter:"blur(3px)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,zIndex:75}}>
+        <div onClick={e=>e.stopPropagation()} style={{width:"min(560px,100%)",maxHeight:"82vh",overflowY:"auto",background:PAPER,borderRadius:20,boxShadow:"0 24px 60px rgba(0,0,0,.35)"}}>
+          <div style={{background:`linear-gradient(135deg, ${rgb(scl(moodRGB(articlesModal.mood??50),.55))}, ${moodColor(articlesModal.mood??50)})`,color:"#fff",padding:"16px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12}}>
+            <div style={{display:"flex",alignItems:"center",gap:12}}><Glyph mood={articlesModal.mood} size={42}/>
+              <div><div style={{fontFamily:F.display,fontWeight:800,fontSize:20,lineHeight:1.1}}>{articlesModal.label}</div>
+                <div style={{fontSize:13,fontWeight:600,opacity:.95,marginTop:2}}>{moodWord(articlesModal.mood)} · {articlesModal.mood}/100 · what’s behind the score</div></div></div>
+            <button onClick={()=>setArticlesModal(null)} style={{...glassBtn,padding:"6px 12px",fontSize:13}}>Close</button>
+          </div>
+          <div style={{padding:"16px 20px 22px"}}>
+            {articlesModal.items&&articlesModal.items.length
+              ? <ul style={{listStyle:"none",margin:0,padding:0,display:"grid",gap:9}}>{articlesModal.items.map((it,i)=><Headline key={i} it={it}/>)}</ul>
+              : <div style={{color:INK2,fontSize:13.5,lineHeight:1.5}}>No articles loaded for {articlesModal.label} yet. Tap it under “Forecast by topic” to read its headlines.</div>}
+          </div>
+        </div>
+      </div>}
 
       {/* PASSCODE GATE */}
       {gate && (
