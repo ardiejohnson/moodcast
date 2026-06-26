@@ -110,27 +110,32 @@ async function gradeQuery(query, n=4){
   return { mood, items };
 }
 
-/* ---- shared board: one latest reading every visitor sees (see api/board.js) ---- */
-async function loadBoardLatest(){
+/* ---- shared board: latest reading + Sunny Side, seen by every visitor (api/board.js) ---- */
+async function loadBoard(){
   try{
     const res=await fetch("/api/board",{cache:"no-store"});
-    if(!res.ok)return null;
+    if(!res.ok)return {latest:null,sunny:null};
     const data=await res.json();
-    return data&&data.latest?data.latest:null; // { results, overall, t } | null
-  }catch{ return null; }
+    return { latest:data?.latest||null, sunny:data?.sunny||null }; // {results,overall,t} | {item,mood,t}
+  }catch{ return {latest:null,sunny:null}; }
 }
-async function saveBoardLatest(results,overall){
-  // Strip per-device series; the server keeps only mood+items per entry.
-  const slim={};
-  for(const id in results){ const r=results[id]; if(!r)continue; slim[id]={mood:r.mood,items:r.items||[]}; }
+async function postBoard(payload){
   try{
     await fetch("/api/board",{
       method:"POST",
       headers:{ "Content-Type":"application/json", "x-moodcast-pass":PASSCODE },
-      body:JSON.stringify({ results:slim, overall }),
+      body:JSON.stringify(payload),
     });
   }catch{ /* best-effort; a failed publish must never break the local reading */ }
 }
+function saveBoardLatest(results,overall){
+  // Strip per-device series; the server keeps only mood+items per entry.
+  const slim={};
+  for(const id in results){ const r=results[id]; if(!r)continue; slim[id]={mood:r.mood,items:r.items||[]}; }
+  return postBoard({ results:slim, overall });
+}
+// Publish the Sunny Side card so every visitor sees the same brightest story.
+function saveBoardSunny(card){ return postBoard({ sunny:card }); }
 
 /* ---- Yay/Boo crowd votes (see api/vote.js) ---- */
 // Anonymous, stable per browser. Only used to dedup/switch a voter's own vote.
@@ -290,19 +295,22 @@ export default function MoodCast(){
     const r=await store.get("ms:recent"); if(r)setRecent(r);
     const sv=await store.get("ms:saved"); if(sv)setSaved(sv);
     const sn=await store.get("ms:sunny"); if(sn)setSunny(sn);
+    const localSunnyT=sn&&sn.t?sn.t:0;
     const pw=await store.get("ms:pass"); if(pw)PASSCODE=pw;
     const st=await store.get("ms:settings"); if(st){ if(st.perCat)setPerCat(st.perCat); if(typeof st.includeFollows==="boolean")setIncludeFollows(st.includeFollows);
       if(typeof st.interval==="number")setIntervalMin(st.interval); if(Array.isArray(st.hiddenCats))setHiddenCats(st.hiddenCats); if(Array.isArray(st.catOrder))setCatOrder(st.catOrder); }
     setLoadedPrefs(true);
     // Shared board: if the crowd's latest reading is newer than this device's,
     // show it. Merge over local entries so personal trend sparklines survive.
-    const board=await loadBoardLatest();
-    if(board&&board.t&&board.t>localT){
+    const { latest, sunny }=await loadBoard();
+    if(latest&&latest.t&&latest.t>localT){
       setResults(prev=>{ const next={...prev};
-        for(const id in (board.results||{})){ const b=board.results[id]; next[id]={...next[id],mood:b.mood,items:b.items||[]}; }
+        for(const id in (latest.results||{})){ const b=latest.results[id]; next[id]={...next[id],mood:b.mood,items:b.items||[]}; }
         return next; });
-      setLastRun(board.t); setFromCrowd(true);
+      setLastRun(latest.t); setFromCrowd(true);
     }
+    // The Sunny Side is shared too — take the crowd's if it's newer than local.
+    if(sunny&&sunny.t&&sunny.t>localSunnyT){ setSunny(sunny); store.set("ms:sunny",sunny); }
   })();
     onAuthFail=()=>setGate(true);
     setReduced(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches);
@@ -378,7 +386,7 @@ export default function MoodCast(){
       const r=await gradeQuery("the single most uplifting, genuinely positive good-news story in the world today",5);
       const items=(r.items||[]).filter(it=>Number.isFinite(it.score));
       const best=items.length?items.reduce((a,b)=>b.score>a.score?b:a):null;
-      if(best){ const card={item:best,mood:toMood(best.score),t:Date.now()}; setSunny(card); store.set("ms:sunny",card); }
+      if(best){ const card={item:best,mood:toMood(best.score),t:Date.now()}; setSunny(card); store.set("ms:sunny",card); saveBoardSunny(card); }
     }catch{}
     setSunnyBusy(false);
   };
