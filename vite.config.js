@@ -161,6 +161,37 @@ function mockApiPlugin() {
         }
         next()
       })
+
+      // In-memory weather reactions: rx[id] = {emoji:count}; rxer[id][voter] = Set(emoji)
+      const rx = {}, rxer = {}
+      const EMO = ['☀️', '🌤️', '⛈️', '🌈']
+      server.middlewares.use('/api/react', async (req, res, next) => {
+        res.setHeader('content-type', 'application/json')
+        const url = new URL(req.url, 'http://localhost')
+        const empty = () => ({ '☀️': 0, '🌤️': 0, '⛈️': 0, '🌈': 0 })
+        if (req.method === 'GET') {
+          const ids = (url.searchParams.get('ids') || '').split(',').filter(Boolean)
+          const voter = url.searchParams.get('voter') || ''
+          const reactions = {}, mine = {}
+          for (const id of ids) {
+            reactions[id] = rx[id] || empty()
+            mine[id] = [...((rxer[id] && rxer[id][voter]) || [])]
+          }
+          res.end(JSON.stringify({ reactions, mine, mocked: true }))
+          return
+        }
+        if (req.method === 'POST') {
+          const { id, emoji, voter } = await readBody(req)
+          if (!id || !voter || !EMO.includes(emoji)) { res.statusCode = 400; res.end('{"error":"bad"}'); return }
+          rx[id] = rx[id] || empty(); rxer[id] = rxer[id] || {}
+          const set = rxer[id][voter] || (rxer[id][voter] = new Set())
+          if (set.has(emoji)) { set.delete(emoji); rx[id][emoji] = Math.max(0, rx[id][emoji] - 1) }
+          else { set.add(emoji); rx[id][emoji]++ }
+          res.end(JSON.stringify({ id, reactions: rx[id], mine: [...set], mocked: true }))
+          return
+        }
+        next()
+      })
     },
   }
 }
