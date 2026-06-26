@@ -298,6 +298,26 @@ function VoteBar({ data, mine, onVote, compact=false }){
     </div>
   );
 }
+// Overall hero vote: "higher or lower than N?" with up/down arrows, styled for
+// the dark hero. Reuses the same yay/boo storage (yay = higher, boo = lower).
+function HeroVote({ overall, data, mine, onVote, count=0, onComment }){
+  const yay=data?.yay||0, boo=data?.boo||0, total=yay+boo; const cm=crowdMood(data);
+  const btn=(dir,arrow,label,color)=>{ const on=mine===dir; const n=dir==="yay"?yay:boo;
+    return <button onClick={()=>onVote(dir)} style={{display:"inline-flex",alignItems:"center",gap:7,padding:"8px 16px",borderRadius:999,fontSize:14,fontWeight:800,cursor:"pointer",
+      background:on?color:"rgba(255,255,255,.16)",color:"#fff",border:`1px solid ${on?color:"rgba(255,255,255,.32)"}`,backdropFilter:"blur(3px)",transition:"all .12s"}}>
+      <span style={{color:on?"#fff":color,fontSize:16,lineHeight:1}}>{arrow}</span>{label}{n>0&&<b style={{opacity:.9}}>{n}</b>}</button>; };
+  return (
+    <div style={{marginTop:16}}>
+      <div style={{fontSize:14,fontWeight:600,opacity:.95,marginBottom:9}}>Does today feel <span style={{color:VOTE_SUN,fontWeight:800}}>higher</span> or <span style={{color:"#9FB6D6",fontWeight:800}}>lower</span> than {overall}? <span style={{opacity:.7,fontWeight:500}}>The forecast is the AI’s — this is the crowd’s.</span></div>
+      <div style={{display:"flex",alignItems:"center",gap:9,flexWrap:"wrap"}}>
+        {btn("yay","▲","Higher",VOTE_SUN)}
+        {btn("boo","▼","Lower","#7E9AC0")}
+        {total>0 && <span style={{fontSize:12.5,opacity:.9,fontWeight:700}}>crowd says {cm} · {total} vote{total>1?"s":""}</span>}
+        <button onClick={onComment} style={{display:"inline-flex",alignItems:"center",gap:6,marginLeft:"auto",background:"transparent",border:"none",cursor:"pointer",color:"#fff",opacity:.9,fontSize:13,fontWeight:700}}>💬 {count||"Comment"}</button>
+      </div>
+    </div>
+  );
+}
 // The crowd's number (from Yay/Boo), shown beside the AI mood for comparison.
 function CrowdBadge({ crowd }){
   if(crowd==null)return null;
@@ -693,18 +713,12 @@ export default function MoodCast(){
             </div>
             <div style={{filter:"drop-shadow(0 6px 14px rgba(0,0,0,.2))"}}><Glyph mood={overall} size={108}/></div>
           </div>
+          {overall!=null && <HeroVote overall={overall} data={votes["overall"]} mine={myVotes["overall"]} onVote={(dir)=>handleVote("overall",dir)} count={commentCounts["overall"]} onComment={()=>setCommentsFor({id:"overall",label:"Today’s mood"})}/>}
           <div style={{position:"relative",marginTop:18,display:"flex",gap:10,flexWrap:"wrap",alignItems:"center"}}>
             <button onClick={()=>{setCopied(false);setShare(true);}} style={glassBtn}>Share today’s mood</button>
             <div style={{fontSize:12,opacity:.8}}>{lastRun?`last read ${ago(lastRun)}${fromCrowd?" by the crowd":""}`:"not read yet"} · scale 0 (stormy) - 100 (radiant)</div>
           </div>
         </section>
-
-        {overall!=null&&<div style={{marginTop:14,background:CARD,border:`1px solid ${LINE}`,borderRadius:16,padding:"14px 18px",boxShadow:"0 2px 10px rgba(27,35,48,.04)"}}>
-          <div style={{fontFamily:F.display,fontWeight:800,fontSize:15.5,color:INK}}>Does today feel <span style={{color:VOTE_SUN}}>brighter</span> or <span style={{color:VOTE_STORM}}>heavier</span> than {overall}?</div>
-          <div style={{fontSize:12.5,color:INK2,marginTop:2,fontWeight:600}}>The forecast is the AI’s read — this is the crowd’s.</div>
-          <VoteBar data={votes["overall"]} mine={myVotes["overall"]} onVote={(dir)=>handleVote("overall",dir)}/>
-          <CommentButton count={commentCounts["overall"]} onClick={()=>setCommentsFor({id:"overall",label:"Today’s mood"})}/>
-        </div>}
 
         {error&&<div style={{marginTop:14,padding:"10px 14px",border:`1px solid #E7B4A8`,background:"#FBEDE9",borderRadius:12,color:"#9A3B26",fontSize:13}}>{error}</div>}
 
