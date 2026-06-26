@@ -76,16 +76,50 @@ function mockApiPlugin() {
         })
       })
 
+      let boardSunny = null
       server.middlewares.use('/api/board', async (req, res, next) => {
         res.setHeader('content-type', 'application/json')
         if (req.method === 'GET') {
-          res.end(JSON.stringify({ latest: boardLatest, mocked: true }))
+          res.end(JSON.stringify({ latest: boardLatest, sunny: boardSunny, mocked: true }))
           return
         }
         if (req.method === 'POST') {
           const body = await readBody(req)
-          boardLatest = { results: body.results || {}, overall: body.overall ?? null, t: Date.now() }
-          res.end(JSON.stringify({ ok: true, t: boardLatest.t, mocked: true }))
+          if (body.results) boardLatest = { results: body.results, overall: body.overall ?? null, t: Date.now() }
+          if (body.sunny) boardSunny = { ...body.sunny, t: Date.now() }
+          res.end(JSON.stringify({ ok: true, t: Date.now(), mocked: true }))
+          return
+        }
+        next()
+      })
+
+      // In-memory Yay/Boo votes: tallies[id] = {yay,boo}; voters[id][voter] = dir
+      const tallies = {}
+      const voters = {}
+      server.middlewares.use('/api/vote', async (req, res, next) => {
+        res.setHeader('content-type', 'application/json')
+        const url = new URL(req.url, 'http://localhost')
+        if (req.method === 'GET') {
+          const ids = (url.searchParams.get('ids') || '').split(',').filter(Boolean)
+          const voter = url.searchParams.get('voter') || ''
+          const votes = {}, mine = {}
+          for (const id of ids) {
+            votes[id] = tallies[id] || { yay: 0, boo: 0 }
+            mine[id] = (voters[id] && voters[id][voter]) || null
+          }
+          res.end(JSON.stringify({ votes, mine, mocked: true }))
+          return
+        }
+        if (req.method === 'POST') {
+          const { id, dir, voter } = await readBody(req)
+          if (!id || !voter || (dir !== 'yay' && dir !== 'boo')) { res.statusCode = 400; res.end('{"error":"bad"}'); return }
+          tallies[id] = tallies[id] || { yay: 0, boo: 0 }
+          voters[id] = voters[id] || {}
+          const prev = voters[id][voter] || null
+          let mine = dir
+          if (prev === dir) { tallies[id][dir] = Math.max(0, tallies[id][dir] - 1); delete voters[id][voter]; mine = null }
+          else { tallies[id][dir]++; if (prev) tallies[id][prev] = Math.max(0, tallies[id][prev] - 1); voters[id][voter] = dir }
+          res.end(JSON.stringify({ id, mine, votes: tallies[id], mocked: true }))
           return
         }
         next()

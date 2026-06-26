@@ -51,6 +51,7 @@ const { url: REDIS_URL, token: REDIS_TOKEN } = resolveRedisEnv();
 const redis = new Redis({ url: REDIS_URL, token: REDIS_TOKEN });
 
 const LATEST_KEY = 'moodcast:latest';
+const SUNNY_KEY = 'moodcast:sunny';
 const WRITE_LIMIT = 30;        // max writes per IP per window
 const WRITE_WINDOW_S = 60;     // window length in seconds
 
@@ -95,6 +96,14 @@ function cleanReading(body) {
   return { results, overall };
 }
 
+// The Sunny Side card: { item: {title,source,url,summary,score}, mood, t }.
+function cleanSunny(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const item = cleanItem(raw.item);
+  if (!item || !item.title) return null;
+  return { item, mood: clampMood(raw.mood), t: Date.now() };
+}
+
 // ---- helpers ---------------------------------------------------------------
 function clientIp(req) {
   const fwd = req.headers['x-forwarded-for'];
@@ -121,8 +130,11 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
-      const latest = await redis.get(LATEST_KEY); // @upstash/redis auto-parses JSON
-      return res.status(200).json({ latest: latest || null });
+      const [latest, sunny] = await Promise.all([
+        redis.get(LATEST_KEY), // @upstash/redis auto-parses JSON
+        redis.get(SUNNY_KEY),
+      ]);
+      return res.status(200).json({ latest: latest || null, sunny: sunny || null });
     }
 
     if (req.method === 'POST') {
@@ -138,14 +150,22 @@ export default async function handler(req, res) {
 
       let body = req.body;
       if (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = {}; } }
-      const { results, overall } = cleanReading(body || {});
-      if (Object.keys(results).length === 0) {
-        return res.status(400).json({ error: 'Empty reading.' });
+      body = body || {};
+
+      // A write may carry the full reading, the Sunny Side card, or both —
+      // readSunny() publishes the card on its own, separate from a full read.
+      const sunny = 'sunny' in body ? cleanSunny(body.sunny) : undefined;
+      const { results, overall } = cleanReading(body);
+      const hasReading = Object.keys(results).length > 0;
+      if (!hasReading && !sunny) {
+        return res.status(400).json({ error: 'Nothing to publish.' });
       }
 
       const t = Date.now();
-      const reading = { results, overall, t };
-      await redis.set(LATEST_KEY, JSON.stringify(reading));
+      const writes = [];
+      if (hasReading) writes.push(redis.set(LATEST_KEY, JSON.stringify({ results, overall, t })));
+      if (sunny) writes.push(redis.set(SUNNY_KEY, JSON.stringify(sunny)));
+      await Promise.all(writes);
       return res.status(200).json({ ok: true, t });
     }
 

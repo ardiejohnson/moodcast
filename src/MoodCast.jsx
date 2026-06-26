@@ -110,26 +110,57 @@ async function gradeQuery(query, n=4){
   return { mood, items };
 }
 
-/* ---- shared board: one latest reading every visitor sees (see api/board.js) ---- */
-async function loadBoardLatest(){
+/* ---- shared board: latest reading + Sunny Side, seen by every visitor (api/board.js) ---- */
+async function loadBoard(){
   try{
     const res=await fetch("/api/board",{cache:"no-store"});
-    if(!res.ok)return null;
+    if(!res.ok)return {latest:null,sunny:null};
     const data=await res.json();
-    return data&&data.latest?data.latest:null; // { results, overall, t } | null
-  }catch{ return null; }
+    return { latest:data?.latest||null, sunny:data?.sunny||null }; // {results,overall,t} | {item,mood,t}
+  }catch{ return {latest:null,sunny:null}; }
 }
-async function saveBoardLatest(results,overall){
-  // Strip per-device series; the server keeps only mood+items per entry.
-  const slim={};
-  for(const id in results){ const r=results[id]; if(!r)continue; slim[id]={mood:r.mood,items:r.items||[]}; }
+async function postBoard(payload){
   try{
     await fetch("/api/board",{
       method:"POST",
       headers:{ "Content-Type":"application/json", "x-moodcast-pass":PASSCODE },
-      body:JSON.stringify({ results:slim, overall }),
+      body:JSON.stringify(payload),
     });
   }catch{ /* best-effort; a failed publish must never break the local reading */ }
+}
+function saveBoardLatest(results,overall){
+  // Strip per-device series; the server keeps only mood+items per entry.
+  const slim={};
+  for(const id in results){ const r=results[id]; if(!r)continue; slim[id]={mood:r.mood,items:r.items||[]}; }
+  return postBoard({ results:slim, overall });
+}
+// Publish the Sunny Side card so every visitor sees the same brightest story.
+function saveBoardSunny(card){ return postBoard({ sunny:card }); }
+
+/* ---- Yay/Boo crowd votes (see api/vote.js) ---- */
+// Anonymous, stable per browser. Only used to dedup/switch a voter's own vote.
+function voterId(){
+  try{ let v=localStorage.getItem("ms:voter");
+    if(!v){ v=Math.random().toString(36).slice(2,10)+Math.random().toString(36).slice(2,8); localStorage.setItem("ms:voter",v); }
+    return v;
+  }catch{ return "anon"; }
+}
+async function fetchVotes(ids){
+  const list=(ids||[]).filter(Boolean); if(!list.length)return {votes:{},mine:{}};
+  try{
+    const res=await fetch(`/api/vote?ids=${encodeURIComponent(list.join(","))}&voter=${encodeURIComponent(voterId())}`,{cache:"no-store"});
+    if(!res.ok)return {votes:{},mine:{}};
+    const d=await res.json(); return { votes:d.votes||{}, mine:d.mine||{} };
+  }catch{ return {votes:{},mine:{}}; }
+}
+async function castVote(id,dir){
+  const res=await fetch("/api/vote",{
+    method:"POST",
+    headers:{ "Content-Type":"application/json", "x-moodcast-pass":PASSCODE },
+    body:JSON.stringify({ id, dir, voter:voterId() }),
+  });
+  if(!res.ok)throw new Error("vote failed "+res.status);
+  return res.json(); // { id, mine, votes:{yay,boo} }
 }
 
 /* ----------------------- visuals ----------------------- */
@@ -188,6 +219,35 @@ function ConfirmButton({ label, onConfirm, style }){
   return <button style={style} onClick={()=>{ if(armed){setArmed(false);onConfirm();} else setArmed(true); }}>{armed?"Tap again to confirm":label}</button>;
 }
 
+// Crowd "tug-of-war": Yay ☀️ vs Boo ⛈️. The fill slides toward whichever side
+// is winning; tapping again toggles your vote off. `data` is {yay,boo}, `mine`
+// is "yay"|"boo"|null. Compact mode trims it for dense card grids.
+const VOTE_SUN = "#E9A23B", VOTE_STORM = "#5E7EA8";
+function VoteBar({ data, mine, onVote, compact=false }){
+  const yay=Math.max(0,data?.yay||0), boo=Math.max(0,data?.boo||0); const total=yay+boo;
+  const pct=total? Math.round((yay/total)*100) : 50; // sunny share of the bar
+  const [burst,setBurst]=useState(null);
+  const tap=(dir)=>{ setBurst(dir); setTimeout(()=>setBurst(null),420); onVote(dir); };
+  const chip=(dir)=>{ const on=mine===dir; const sun=dir==="yay";
+    return { display:"flex",alignItems:"center",gap:5,padding:compact?"4px 9px":"6px 12px",borderRadius:999,
+      fontSize:compact?12.5:13.5,fontWeight:800,cursor:"pointer",lineHeight:1,transition:"transform .12s",
+      transform:burst===dir?"scale(1.12)":"scale(1)",
+      background:on?(sun?VOTE_SUN:VOTE_STORM):CARD, color:on?"#fff":INK,
+      border:`1px solid ${on?(sun?VOTE_SUN:VOTE_STORM):LINE}` }; };
+  return (
+    <div onClick={(e)=>e.stopPropagation()} style={{marginTop:compact?10:14}}>
+      <div style={{position:"relative",height:compact?8:10,borderRadius:999,overflow:"hidden",background:VOTE_STORM}}>
+        <div style={{position:"absolute",inset:0,width:`${pct}%`,background:VOTE_SUN,transition:"width .5s cubic-bezier(.4,1.3,.5,1)"}}/>
+      </div>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginTop:compact?7:9}}>
+        <button onClick={()=>tap("yay")} style={chip("yay")} title="Yay — brighter than it looks">☀️ Yay {yay>0&&<b>{yay}</b>}</button>
+        <span style={{fontSize:11.5,color:INK2,fontWeight:700}}>{total?`${total} vote${total>1?"s":""}`:"be the first"}</span>
+        <button onClick={()=>tap("boo")} style={chip("boo")} title="Boo — heavier than it looks">⛈️ Boo {boo>0&&<b>{boo}</b>}</button>
+      </div>
+    </div>
+  );
+}
+
 /* --------------------------------- APP --------------------------------- */
 export default function MoodCast(){
   const [results,setResults]=useState({});
@@ -197,6 +257,8 @@ export default function MoodCast(){
   const [history,setHistory]=useState([]);
   const [lastRun,setLastRun]=useState(null);
   const [fromCrowd,setFromCrowd]=useState(false);
+  const [votes,setVotes]=useState({});      // { id: {yay,boo} }
+  const [myVotes,setMyVotes]=useState({});  // { id: "yay"|"boo"|null }
   const [error,setError]=useState(null);
   const [detail,setDetail]=useState(null);
   const [detailLoading,setDetailLoading]=useState(false);
@@ -233,19 +295,22 @@ export default function MoodCast(){
     const r=await store.get("ms:recent"); if(r)setRecent(r);
     const sv=await store.get("ms:saved"); if(sv)setSaved(sv);
     const sn=await store.get("ms:sunny"); if(sn)setSunny(sn);
+    const localSunnyT=sn&&sn.t?sn.t:0;
     const pw=await store.get("ms:pass"); if(pw)PASSCODE=pw;
     const st=await store.get("ms:settings"); if(st){ if(st.perCat)setPerCat(st.perCat); if(typeof st.includeFollows==="boolean")setIncludeFollows(st.includeFollows);
       if(typeof st.interval==="number")setIntervalMin(st.interval); if(Array.isArray(st.hiddenCats))setHiddenCats(st.hiddenCats); if(Array.isArray(st.catOrder))setCatOrder(st.catOrder); }
     setLoadedPrefs(true);
     // Shared board: if the crowd's latest reading is newer than this device's,
     // show it. Merge over local entries so personal trend sparklines survive.
-    const board=await loadBoardLatest();
-    if(board&&board.t&&board.t>localT){
+    const { latest, sunny }=await loadBoard();
+    if(latest&&latest.t&&latest.t>localT){
       setResults(prev=>{ const next={...prev};
-        for(const id in (board.results||{})){ const b=board.results[id]; next[id]={...next[id],mood:b.mood,items:b.items||[]}; }
+        for(const id in (latest.results||{})){ const b=latest.results[id]; next[id]={...next[id],mood:b.mood,items:b.items||[]}; }
         return next; });
-      setLastRun(board.t); setFromCrowd(true);
+      setLastRun(latest.t); setFromCrowd(true);
     }
+    // The Sunny Side is shared too — take the crowd's if it's newer than local.
+    if(sunny&&sunny.t&&sunny.t>localSunnyT){ setSunny(sunny); store.set("ms:sunny",sunny); }
   })();
     onAuthFail=()=>setGate(true);
     setReduced(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches);
@@ -269,6 +334,27 @@ export default function MoodCast(){
     ents.forEach(e=>{const sx=results[e.id]?.series;if(sx&&sx.length>=2){const d=sx[sx.length-1].mood-sx[sx.length-2].mood;if(!best||Math.abs(d)>Math.abs(best.d))best={label:e.label,d};}});
     return best&&best.d!==0?best:null; })();
   const entitiesWithMood=()=>{ const out=[]; CATEGORIES.forEach(c=>{const m=results[c.id]?.mood;if(m!=null)out.push({id:c.id,label:c.label,mood:m});}); saved.forEach(s=>{const m=results[s.id]?.mood;if(m!=null)out.push({id:s.id,label:s.subject,mood:m});}); return out; };
+
+  // Yay/Boo crowd votes for every votable card on the home screen.
+  const votableIds=["overall",...CATEGORIES.map(c=>c.id),...saved.map(s=>s.id)];
+  const voteIdsKey=votableIds.join(",");
+  const votesRef=useRef(voteIdsKey); votesRef.current=voteIdsKey;
+  const refreshVotes=useCallback(async()=>{ const r=await fetchVotes(votesRef.current.split(",").filter(Boolean));
+    setVotes(r.votes); setMyVotes(r.mine); },[]);
+  useEffect(()=>{ refreshVotes();
+    const tick=()=>{ if(typeof document==="undefined"||!document.hidden)refreshVotes(); };
+    const iv=setInterval(tick,20000); // light poll so counts feel live
+    return ()=>clearInterval(iv);
+  },[voteIdsKey,refreshVotes]);
+  const handleVote=useCallback(async(id,dir)=>{
+    const cur=votes[id]||{yay:0,boo:0}; const prevMine=myVotes[id]||null;
+    const opt={...cur}; let mine;
+    if(prevMine===dir){ opt[dir]=Math.max(0,(opt[dir]||0)-1); mine=null; }
+    else{ opt[dir]=(opt[dir]||0)+1; if(prevMine)opt[prevMine]=Math.max(0,(opt[prevMine]||0)-1); mine=dir; }
+    setVotes(v=>({...v,[id]:opt})); setMyVotes(m=>({...m,[id]:mine})); // optimistic
+    try{ const res=await castVote(id,dir); setVotes(v=>({...v,[id]:res.votes})); setMyVotes(m=>({...m,[id]:res.mine})); }
+    catch{ setVotes(v=>({...v,[id]:cur})); setMyVotes(m=>({...m,[id]:prevMine})); } // revert
+  },[votes,myVotes]);
 
   const read=useCallback(async(entities,recordOverall=true)=>{
     if(busy||!entities.length)return; setBusy(true); setError(null); setLoadingIds(entities.map(e=>e.id));
@@ -300,7 +386,7 @@ export default function MoodCast(){
       const r=await gradeQuery("the single most uplifting, genuinely positive good-news story in the world today",5);
       const items=(r.items||[]).filter(it=>Number.isFinite(it.score));
       const best=items.length?items.reduce((a,b)=>b.score>a.score?b:a):null;
-      if(best){ const card={item:best,mood:toMood(best.score),t:Date.now()}; setSunny(card); store.set("ms:sunny",card); }
+      if(best){ const card={item:best,mood:toMood(best.score),t:Date.now()}; setSunny(card); store.set("ms:sunny",card); saveBoardSunny(card); }
     }catch{}
     setSunnyBusy(false);
   };
@@ -449,6 +535,12 @@ export default function MoodCast(){
           </div>
         </section>
 
+        {overall!=null&&<div style={{marginTop:14,background:CARD,border:`1px solid ${LINE}`,borderRadius:16,padding:"14px 18px",boxShadow:"0 2px 10px rgba(27,35,48,.04)"}}>
+          <div style={{fontFamily:F.display,fontWeight:800,fontSize:15.5,color:INK}}>Does today feel <span style={{color:VOTE_SUN}}>brighter</span> or <span style={{color:VOTE_STORM}}>heavier</span> than {overall}?</div>
+          <div style={{fontSize:12.5,color:INK2,marginTop:2,fontWeight:600}}>The forecast is the AI’s read — this is the crowd’s.</div>
+          <VoteBar data={votes["overall"]} mine={myVotes["overall"]} onVote={(dir)=>handleVote("overall",dir)}/>
+        </div>}
+
         {error&&<div style={{marginTop:14,padding:"10px 14px",border:`1px solid #E7B4A8`,background:"#FBEDE9",borderRadius:12,color:"#9A3B26",fontSize:13}}>{error}</div>}
 
         {/* THE SUNNY SIDE */}
@@ -555,6 +647,7 @@ export default function MoodCast(){
                       <div style={{fontSize:12,color:INK2,fontWeight:600,display:"flex",alignItems:"center",gap:6}}>{loading?<><Spinner size={11}/>reading…</>:moodWord(m)}</div><Spark series={series} color={moodColor(m)}/></div>
                     {!editMode&&<div style={{fontSize:11.5,color:"#9AA3AE",marginTop:8,fontWeight:600}}>Tap for graph →</div>}
                   </button>
+                  {!editMode&&m!=null&&<VoteBar compact data={votes[s.id]} mine={myVotes[s.id]} onVote={(dir)=>handleVote(s.id,dir)}/>}
                 </div>);})}
             </div>
           </section>
@@ -594,6 +687,7 @@ export default function MoodCast(){
                 {!editMode&&has&&<div style={{fontSize:11.5,color:"#9AA3AE",marginTop:8,fontWeight:600}}>Tap for graph & why →</div>}
               </button>
               {!editMode&&!has&&!loading&&<button onClick={()=>refreshOne(c)} disabled={busy} style={{width:"100%",marginTop:12,background:ACCENT,color:"#fff",borderRadius:10,padding:"9px 0",fontSize:13,fontWeight:700,opacity:busy?.5:1,cursor:busy?"not-allowed":"pointer"}}>Get mood</button>}
+              {!editMode&&has&&<VoteBar compact data={votes[c.id]} mine={myVotes[c.id]} onVote={(dir)=>handleVote(c.id,dir)}/>}
             </div>);})}
         </section>
 
