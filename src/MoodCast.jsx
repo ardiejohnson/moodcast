@@ -525,6 +525,7 @@ export default function MoodCast(){
   const [copied,setCopied]=useState(false);
   const [reduced,setReduced]=useState(false);
   const [range,setRange]=useState("5Y");
+  const [yearNote,setYearNote]=useState(null); // { t, label, mood, ev, live, text, loading }
   // settings + view prefs
   const [perCat,setPerCat]=useState(3);
   const [includeFollows,setIncludeFollows]=useState(true);
@@ -765,6 +766,24 @@ export default function MoodCast(){
     if(rangeMs!=null&&rangeMs<=YEAR_MS) return d.toLocaleDateString([],{year:"numeric",month:"long",day:"numeric"});
     if(rangeMs!=null&&rangeMs<=10*YEAR_MS) return d.toLocaleDateString([],{year:"numeric",month:"long"});
     return String(d.getUTCFullYear()); };
+  const pointLabel=(p)=>{ const d=new Date(p.t); const y=d.getUTCFullYear();
+    return p.live?d.toLocaleDateString([],{year:"numeric",month:"long",day:"numeric"}):(y<=2019?String(y):d.toLocaleDateString([],{year:"numeric",month:"long"})); };
+  const onChartClick=async(e)=>{
+    const p=e&&e.activePayload&&e.activePayload[0]&&e.activePayload[0].payload; if(!p)return;
+    const label=pointLabel(p);
+    setYearNote({ t:p.t, label, mood:p.overall, ev:p.ev, live:p.live, text:null, loading:!p.live });
+    if(p.live){ setYearNote(n=>n&&n.t===p.t?{...n,text:`A real reading taken on ${label} — the news mood read ${p.overall}/100 (${moodWord(p.overall)}).`,loading:false}:n); return; }
+    const key="ms:why:"+p.t;
+    const cached=await store.get(key);
+    if(cached){ setYearNote(n=>n&&n.t===p.t?{...n,text:cached,loading:false}:n); return; }
+    try{
+      const sys="You are a concise, accurate U.S. social historian writing for a 'public mood' app. In 3–5 sentences, explain the mood and national sentiment of the United States at the given time and WHY — the specific events, economy, wars, or cultural currents that shaped how optimistic or pessimistic people felt. Be factual and specific; name real events. No preamble, no caveats about data.";
+      const user=`Time: ${label}. Estimated U.S. public mood: ${p.overall}/100 (0=stormy/bleak, 50=neutral, 100=radiant/hopeful)${p.ev?`. Key marker: ${p.ev}`:""}. Explain why the national mood was around this level then.`;
+      const txt=await callModel(sys,user);
+      if(txt){ store.set(key,txt); setYearNote(n=>n&&n.t===p.t?{...n,text:txt,loading:false}:n); }
+      else setYearNote(n=>n&&n.t===p.t?{...n,text:"Couldn't load an explanation right now — try again.",loading:false}:n);
+    }catch{ setYearNote(n=>n&&n.t===p.t?{...n,text:"Couldn't load an explanation right now — try again.",loading:false}:n); }
+  };
   const outBusy=searchBusy||questionBusy;
 
   return (
@@ -1033,7 +1052,7 @@ export default function MoodCast(){
           </div>
           {chartData.length<2 ? <div style={{padding:"34px 12px",textAlign:"center",color:INK2,fontSize:13}}>Not enough data in this range yet. Take a few readings, or pick a longer span to see the historical arc.</div>
           : <ResponsiveContainer width="100%" height={230}>
-              <LineChart data={chartData} margin={{top:6,right:14,bottom:4,left:-20}}>
+              <LineChart data={chartData} margin={{top:6,right:14,bottom:4,left:-20}} onClick={onChartClick} style={{cursor:"pointer"}}>
                 <defs><linearGradient id="mg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#F4A93B"/><stop offset="100%" stopColor="#46577A"/></linearGradient></defs>
                 <CartesianGrid stroke={LINE} vertical={false}/>
                 <XAxis dataKey="t" type="number" scale="time" domain={["dataMin","dataMax"]} tickFormatter={axisFmt} stroke={LINE} tickLine={false} minTickGap={44}/>
@@ -1044,7 +1063,17 @@ export default function MoodCast(){
                 <Line type="monotone" dataKey="overall" name="Public mood" stroke="url(#mg)" strokeWidth={range==="250Y"||range==="100Y"?2:3} dot={false} isAnimationActive={!reduced}/>
               </LineChart>
             </ResponsiveContainer>}
-          <div style={{fontSize:11,color:"#9AA3AE",padding:"6px 6px 0",lineHeight:1.5}}>The shaded stretch is a <b style={{fontWeight:700}}>historical estimate</b> of U.S. public mood, not a measurement — reconstructed from documented conditions, and from 1952 the U. Michigan Consumer Sentiment Index and (from 1979) Gallup. Hover any point for the year, mood, and what was happening. Your live readings add real data from today.</div>
+          {yearNote && <div style={{margin:"12px 6px 4px",background:`linear-gradient(135deg, ${rgb(scl(moodRGB(yearNote.mood),.86))}, #FFFFFF)`,border:`1px solid ${LINE}`,borderRadius:14,padding:"14px 16px"}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
+              <div style={{display:"flex",alignItems:"center",gap:10}}><Glyph mood={yearNote.mood} size={34}/>
+                <div><div style={{fontFamily:F.display,fontWeight:800,fontSize:17}}>{yearNote.label}</div>
+                  <div style={{fontSize:12.5,color:INK2,fontWeight:600}}><b style={{color:moodColor(yearNote.mood),fontWeight:800}}>{yearNote.mood}</b> · {moodWord(yearNote.mood)} · {yearNote.live?"real reading":"estimate"}</div></div></div>
+              <button onClick={()=>setYearNote(null)} style={{background:"transparent",fontSize:18,color:INK2,lineHeight:1}}>×</button>
+            </div>
+            {yearNote.ev && <div style={{fontSize:12.5,fontWeight:700,color:INK,marginTop:10}}>{yearNote.ev}</div>}
+            <div style={{fontSize:13.5,color:INK,marginTop:8,lineHeight:1.5}}>{yearNote.loading?<span style={{display:"inline-flex",alignItems:"center",gap:8,color:INK2}}><Spinner size={15}/>Looking back at {yearNote.label}…</span>:yearNote.text}</div>
+          </div>}
+          <div style={{fontSize:11,color:"#9AA3AE",padding:"6px 6px 0",lineHeight:1.5}}>The shaded stretch is a <b style={{fontWeight:700}}>historical estimate</b> of U.S. public mood, not a measurement — reconstructed from documented conditions, and from 1952 the U. Michigan Consumer Sentiment Index and (from 1979) Gallup. <b style={{fontWeight:700}}>Tap any point</b> on the line to learn why. Your live readings add real data from today.</div>
         </section>
 
         <div style={{marginTop:16,fontSize:11,color:"#9AA3AE",textAlign:"center",maxWidth:560,marginLeft:"auto",marginRight:"auto",lineHeight:1.5}}>A playful read on the mood of the news, not a precise measurement. Scores are AI estimates of recent headlines, searched live.</div>
