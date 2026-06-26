@@ -624,7 +624,7 @@ export default function MoodCast(){
     const { latest, sunny, dark }=await loadBoard();
     if(latest&&latest.t&&latest.t>localT){
       setResults(prev=>{ const next={...prev};
-        for(const id in (latest.results||{})){ const b=latest.results[id]; next[id]={...next[id],mood:b.mood,items:b.items||[]}; }
+        for(const id in (latest.results||{})){ const b=latest.results[id]; next[id]={...next[id],mood:b.mood,items:b.items||[],t:latest.t}; }
         return next; });
       setLastRun(latest.t); setFromCrowd(true);
     }
@@ -697,8 +697,8 @@ export default function MoodCast(){
       const res=await Promise.allSettled(batch.map(e=>gradeQuery(e.query,perCat)));
       res.forEach((r,j)=>{const id=batch[j].id;
         if(r.status==="fulfilled"){const prev=merged[id]||{};const series=appendSeries(prev.series,r.value.mood,t);
-          merged[id]={...prev,mood:r.value.mood,items:r.value.items,series};
-          setResults(s=>({...s,[id]:{...s[id],mood:r.value.mood,items:r.value.items,series}}));}
+          merged[id]={...prev,mood:r.value.mood,items:r.value.items,series,t};
+          setResults(s=>({...s,[id]:{...s[id],mood:r.value.mood,items:r.value.items,series,t}}));}
         else fail++; setLoadingIds(l=>l.filter(x=>x!==id));});}
     if(recordOverall){const all=CATEGORIES.map(c=>merged[c.id]?.mood).filter(x=>x!=null);
       if(all.length){const ov=Math.round(all.reduce((a,b)=>a+b,0)/all.length);const byCat={};CATEGORIES.forEach(c=>{if(merged[c.id]?.mood!=null)byCat[c.id]=merged[c.id].mood;});
@@ -788,7 +788,7 @@ export default function MoodCast(){
       setResults(s=>({...s,[ent.id]:{...s[ent.id],subs}})); setDetailLoading(false);
     } else { if(resultsRef.current[ent.id]?.items?.length)return;
       setDetailLoading(true); try{const r=await gradeQuery(ent.query,perCat);const t=Date.now();
-        setResults(s=>({...s,[ent.id]:{...s[ent.id],mood:r.mood,items:r.items,series:appendSeries(s[ent.id]?.series,r.mood,t)}}));}catch{} setDetailLoading(false);
+        setResults(s=>({...s,[ent.id]:{...s[ent.id],mood:r.mood,items:r.items,series:appendSeries(s[ent.id]?.series,r.mood,t),t}}));}catch{} setDetailLoading(false);
     }
   };
 
@@ -825,7 +825,7 @@ export default function MoodCast(){
     setAnswer(null); setSearchBusy(true); setSearchResult(null);
     try{ const r=await gradeQuery(subject,perCat); const card={subject,mood:r.mood,items:r.items,t:Date.now()}; setSearchResult(card);
       setRecent(prev=>{const nr=[{subject,mood:r.mood,t:card.t},...prev.filter(x=>x.subject.toLowerCase()!==subject.toLowerCase())].slice(0,8);store.set("ms:recent",nr);return nr;});
-      const id=slug(subject); if(saved.some(s=>s.id===id)){const t=card.t;setResults(s=>({...s,[id]:{...s[id],mood:r.mood,items:r.items,series:appendSeries(s[id]?.series,r.mood,t)}}));}
+      const id=slug(subject); if(saved.some(s=>s.id===id)){const t=card.t;setResults(s=>({...s,[id]:{...s[id],mood:r.mood,items:r.items,series:appendSeries(s[id]?.series,r.mood,t),t}}));}
     }catch{ setSearchResult({subject,mood:null,items:[],error:true}); }
     setSearchBusy(false);
   };
@@ -955,7 +955,7 @@ export default function MoodCast(){
         </section>
 
         {(topArts.sunny||topArts.cloudy) && <div style={{marginTop:14}}>
-          <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,letterSpacing:"0.02em",marginBottom:8}}>The crowd’s picks today</div>
+          <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,letterSpacing:"0.02em",marginBottom:8}}>The crowd’s picks today <span style={{fontWeight:600,color:"#9AA3AE",fontSize:12}}>· updates live</span></div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",gap:12}}>
             <CrowdPick pick={topArts.sunny} kind="sunny"/>
             <CrowdPick pick={topArts.cloudy} kind="cloudy"/>
@@ -1098,7 +1098,7 @@ export default function MoodCast(){
                     <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,marginTop:10,textTransform:"capitalize",lineHeight:1.15}}>{s.subject}</div>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginTop:6,minHeight:18}}>
                       <div style={{fontSize:12,color:INK2,fontWeight:600,display:"flex",alignItems:"center",gap:6}}>{loading?<><Spinner size={11}/>reading…</>:moodWord(m)}</div><Spark series={series} color={moodColor(m)}/></div>
-                    {!editMode&&<div style={{fontSize:11.5,color:"#9AA3AE",marginTop:8,fontWeight:600}}>Tap for graph →</div>}
+                    {!editMode&&<div style={{fontSize:11.5,color:"#9AA3AE",marginTop:8,fontWeight:600}}>{d?.t?`updated ${ago(d.t)} · `:""}Tap for graph →</div>}
                   </button>
                   {!editMode&&m!=null&&<CommentButton compact count={commentCounts[s.id]} onClick={()=>setCommentsFor({id:s.id,label:s.subject})}/>}
                 </div>);})}
@@ -1137,7 +1137,7 @@ export default function MoodCast(){
                 <div style={{fontFamily:F.display,fontWeight:700,fontSize:16,marginTop:10,lineHeight:1.15}}>{c.label}</div>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginTop:6,minHeight:20}}>
                   <div style={{fontSize:12.5,color:INK2,fontWeight:600,display:"flex",alignItems:"center",gap:6}}>{loading?<><Spinner size={12}/>reading…</>:moodWord(m)}</div><Spark series={series} color={moodColor(m)}/></div>
-                {!editMode&&has&&<div style={{fontSize:11.5,color:"#9AA3AE",marginTop:8,fontWeight:600}}>Tap for graph & why →</div>}
+                {!editMode&&has&&<div style={{fontSize:11.5,color:"#9AA3AE",marginTop:8,fontWeight:600}}>updated {ago(d?.t)} · Tap for graph & why →</div>}
               </button>
               {!editMode&&!has&&!loading&&<button onClick={()=>refreshOne(c)} disabled={busy} style={{width:"100%",marginTop:12,background:ACCENT,color:"#fff",borderRadius:10,padding:"9px 0",fontSize:13,fontWeight:700,opacity:busy?.5:1,cursor:busy?"not-allowed":"pointer"}}>Get mood</button>}
               {!editMode&&has&&<CommentButton compact count={commentCounts[c.id]} onClick={()=>setCommentsFor({id:c.id,label:c.label})}/>}
@@ -1175,7 +1175,7 @@ export default function MoodCast(){
             <div style={{background:`linear-gradient(135deg, ${rgb(scl(moodRGB(worldSel.mood??50),.55))}, ${moodColor(worldSel.mood??50)})`,color:"#fff",padding:"14px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12}}>
               <div style={{display:"flex",alignItems:"center",gap:12}}><Glyph mood={worldSel.mood} size={42}/>
                 <div><div style={{fontFamily:F.display,fontWeight:800,fontSize:20,lineHeight:1.1}}>{worldSel.label}</div>
-                  <div style={{fontWeight:600,opacity:.95,fontSize:13,marginTop:2}}>{worldSel.loading?"Reading the latest…":worldSel.error?"Couldn’t read this one":`${moodWord(worldSel.mood)} · ${worldSel.mood??"——"}/100`}</div></div></div>
+                  <div style={{fontWeight:600,opacity:.95,fontSize:13,marginTop:2}}>{worldSel.loading?"Reading the latest…":worldSel.error?"Couldn’t read this one":`${moodWord(worldSel.mood)} · ${worldSel.mood??"——"}/100${worldMoods[worldSel.code]?.t?` · updated ${ago(worldMoods[worldSel.code].t)}`:""}`}</div></div></div>
               <div style={{display:"flex",gap:8}}>
                 <button onClick={()=>onPickCountry(worldSel.code,worldSel.label)} disabled={worldBusy.includes(worldSel.code)} style={{...glassBtn,padding:"6px 12px",fontSize:13}}>↻ Refresh</button>
                 <button onClick={()=>setWorldSel(null)} style={{...glassBtn,padding:"6px 12px",fontSize:13}}>Close</button>
