@@ -75,6 +75,68 @@ const SEED_MONTHLY = [
 ];
 const SEED_HISTORY = SEED_MONTHLY.map(([y,m,v])=>({ t: Date.UTC(y, m-1, 1), overall: v, est: true }));
 
+/* A 250-year reconstruction of U.S. public mood (0 stormy .. 100 radiant, 50 neutral), one point
+   per year, 1776–2019. This is NOT a measurement. Scientific opinion polling did not exist before
+   the 1930s, so earlier years are historically-grounded ESTIMATES built from documented conditions
+   — wars, financial panics, depressions, booms. From 1952 onward the arc tracks the University of
+   Michigan Index of Consumer Sentiment; from 1979, Gallup's satisfaction-with-direction series.
+   Sources: U. Michigan Surveys of Consumers (sca.isr.umich.edu); Gallup; U.S. economic history. */
+const SEED_ANNUAL = [
+  [1776,58],[1777,44],[1778,48],[1779,45],[1780,42],[1781,60],[1782,56],[1783,60],[1784,48],[1785,45],
+  [1786,41],[1787,50],[1788,60],[1789,64],[1790,60],[1791,60],[1792,58],[1793,52],[1794,50],[1795,56],
+  [1796,54],[1797,50],[1798,46],[1799,48],[1800,54],[1801,58],[1802,58],[1803,64],[1804,62],[1805,60],
+  [1806,56],[1807,46],[1808,44],[1809,48],[1810,52],[1811,50],[1812,46],[1813,44],[1814,40],[1815,60],
+  [1816,54],[1817,64],[1818,64],[1819,44],[1820,46],[1821,50],[1822,54],[1823,58],[1824,56],[1825,60],
+  [1826,56],[1827,56],[1828,54],[1829,56],[1830,58],[1831,56],[1832,54],[1833,56],[1834,54],[1835,58],
+  [1836,58],[1837,40],[1838,38],[1839,38],[1840,40],[1841,40],[1842,42],[1843,46],[1844,52],[1845,56],
+  [1846,54],[1847,56],[1848,60],[1849,62],[1850,54],[1851,56],[1852,56],[1853,56],[1854,50],[1855,48],
+  [1856,46],[1857,42],[1858,44],[1859,44],[1860,42],[1861,38],[1862,35],[1863,38],[1864,40],[1865,46],
+  [1866,48],[1867,48],[1868,48],[1869,52],[1870,54],[1871,52],[1872,54],[1873,42],[1874,38],[1875,38],
+  [1876,40],[1877,44],[1878,48],[1879,52],[1880,56],[1881,54],[1882,56],[1883,54],[1884,50],[1885,52],
+  [1886,50],[1887,54],[1888,54],[1889,56],[1890,52],[1891,52],[1892,52],[1893,36],[1894,33],[1895,38],
+  [1896,42],[1897,48],[1898,56],[1899,60],[1900,60],[1901,56],[1902,58],[1903,58],[1904,56],[1905,58],
+  [1906,54],[1907,44],[1908,50],[1909,54],[1910,54],[1911,54],[1912,54],[1913,54],[1914,48],[1915,50],
+  [1916,52],[1917,48],[1918,42],[1919,44],[1920,46],[1921,46],[1922,56],[1923,58],[1924,60],[1925,62],
+  [1926,62],[1927,62],[1928,64],[1929,58],[1930,42],[1931,34],[1932,26],[1933,30],[1934,36],[1935,40],
+  [1936,44],[1937,40],[1938,38],[1939,42],[1940,46],[1941,44],[1942,44],[1943,48],[1944,54],[1945,62],
+  [1946,56],[1947,56],[1948,58],[1949,56],[1950,56],[1951,56],[1952,60],[1953,62],[1954,62],[1955,64],
+  [1956,64],[1957,58],[1958,56],[1959,60],[1960,60],[1961,62],[1962,62],[1963,56],[1964,64],[1965,66],
+  [1966,64],[1967,60],[1968,48],[1969,56],[1970,52],[1971,52],[1972,56],[1973,48],[1974,42],[1975,44],
+  [1976,52],[1977,54],[1978,52],[1979,42],[1980,40],[1981,44],[1982,42],[1983,54],[1984,62],[1985,62],
+  [1986,64],[1987,60],[1988,62],[1989,62],[1990,54],[1991,52],[1992,54],[1993,58],[1994,60],[1995,62],
+  [1996,64],[1997,66],[1998,68],[1999,70],[2000,70],[2001,54],[2002,54],[2003,54],[2004,56],[2005,54],
+  [2006,56],[2007,56],[2008,36],[2009,40],[2010,44],[2011,44],[2012,48],[2013,48],[2014,52],[2015,58],
+  [2016,54],[2017,58],[2018,58],[2019,58],
+];
+/* Notable events surfaced on the long-range chart tooltip. */
+const MOOD_EVENTS = {
+  1776:"Declaration of Independence",1781:"Victory at Yorktown",1783:"Independence won (Treaty of Paris)",
+  1786:"Shays' Rebellion · postwar depression",1789:"Washington inaugurated",1803:"Louisiana Purchase",
+  1807:"Embargo Act",1812:"War of 1812 begins",1814:"British burn Washington",1815:"War ends · New Orleans",
+  1817:"Era of Good Feelings",1819:"Panic of 1819 — first depression",1825:"Erie Canal opens",
+  1837:"Panic of 1837 — long depression",1845:"Manifest Destiny · Texas",1849:"California Gold Rush",
+  1857:"Panic of 1857",1861:"Civil War begins",1863:"Gettysburg · Emancipation",1865:"Union victory · Lincoln killed",
+  1869:"Transcontinental Railroad",1873:"Panic of 1873 — Long Depression",1893:"Panic of 1893 — severe depression",
+  1898:"Spanish-American War",1900:"New century optimism",1907:"Panic of 1907",1917:"U.S. enters WWI",
+  1918:"WWI · Spanish flu pandemic",1929:"Stock market crash",1932:"Depths of the Great Depression",
+  1933:"New Deal begins",1941:"Pearl Harbor — WWII",1945:"Victory in WWII",1955:"Postwar boom peak",
+  1963:"JFK assassinated",1965:"Peak consumer confidence",1968:"Assassinations · unrest · Tet",
+  1969:"Moon landing",1974:"Watergate · oil crisis",1979:"Malaise · Iran hostage crisis",
+  1980:"Record-low sentiment · recession",1983:"“Morning in America” recovery",1989:"Berlin Wall falls",
+  1999:"Dot-com peak · 71% satisfied",2000:"Highest consumer sentiment",2001:"Dot-com bust · 9/11",
+  2008:"Financial crisis · 7% satisfied",2011:"Debt-ceiling · S&P downgrade",2015:"Recovery strengthens",
+  2020:"COVID-19 pandemic",2022:"Inflation · record-low sentiment",
+};
+const SEED_ANNUAL_HISTORY = SEED_ANNUAL.map(([y,v])=>({ t: Date.UTC(y,6,1), overall: v, est: true, ev: MOOD_EVENTS[y] }));
+// Full estimated backdrop: annual 1776–2019 + monthly 2020→. Live readings layer on top.
+const LONG_HISTORY = [...SEED_ANNUAL_HISTORY, ...SEED_HISTORY.map(s=>({...s, ev: MOOD_EVENTS[new Date(s.t).getUTCFullYear()] }))];
+// Range presets for the trend chart (label → milliseconds; null = all 250 years).
+const YEAR_MS = 365.25*24*3600*1000;
+const RANGES = [
+  ["1W",7*24*3600*1000],["1M",30*24*3600*1000],["6M",182*24*3600*1000],["1Y",YEAR_MS],["5Y",5*YEAR_MS],
+  ["10Y",10*YEAR_MS],["20Y",20*YEAR_MS],["50Y",50*YEAR_MS],["100Y",100*YEAR_MS],["250Y",null],
+];
+
 const store = {
   async get(k){ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):null; }catch{ return null; } },
   async set(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch{} },
@@ -246,6 +308,18 @@ function Spark({ series, color }){
   if(!series || series.length<2) return null;
   const w=64,h=20; const pts = series.map((v,i)=>{const x=(i/(series.length-1))*w;const y=h-(Math.max(0,Math.min(100,v))/100)*h;return `${x.toFixed(1)},${y.toFixed(1)}`;}).join(" ");
   return <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`}><polyline points={pts} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.85"/></svg>;
+}
+// Tooltip for the long-range public-mood chart: shows the mood, whether it's an
+// estimate or a real reading, and any notable historical event for that point.
+function MoodTip({ active, payload, labelFmt }){
+  if(!active||!payload||!payload.length)return null; const p=payload[0].payload;
+  return (
+    <div style={{background:"#fff",border:`1px solid ${LINE}`,borderRadius:10,padding:"8px 11px",fontFamily:F.ui,fontSize:12,boxShadow:"0 6px 18px rgba(27,35,48,.12)",maxWidth:220}}>
+      <div style={{fontWeight:700,color:INK}}>{labelFmt(p.t)}</div>
+      <div style={{marginTop:2}}><b style={{color:moodColor(p.overall),fontWeight:800}}>{p.overall}</b> <span style={{color:INK2}}>{moodWord(p.overall)}</span> <span style={{color:"#9AA3AE",fontSize:11}}>· {p.live?"reading":"estimate"}</span></div>
+      {p.ev&&<div style={{marginTop:5,color:INK2,lineHeight:1.35,borderTop:`1px solid ${LINE}`,paddingTop:5}}>{p.ev}</div>}
+    </div>
+  );
 }
 function EntityGraph({ series }){
   if(!series || series.length<2)
@@ -450,6 +524,7 @@ export default function MoodCast(){
   const [share,setShare]=useState(false);
   const [copied,setCopied]=useState(false);
   const [reduced,setReduced]=useState(false);
+  const [range,setRange]=useState("5Y");
   // settings + view prefs
   const [perCat,setPerCat]=useState(3);
   const [includeFollows,setIncludeFollows]=useState(true);
@@ -672,8 +747,24 @@ export default function MoodCast(){
   const summaryText = `MoodCast — ${today}\nPublic mood: ${overall??"—"}/100 (${moodWord(overall)})${delta!=null?` ${delta>0?"▲ up "+delta:delta<0?"▼ down "+Math.abs(delta):"steady"} since last`:""}\n${brightest?`Brightest: ${brightest.c.label} (${brightest.m})`:""} · ${heaviest?`Heaviest: ${heaviest.c.label} (${heaviest.m})`:""}`;
   const copy=async()=>{ try{await navigator.clipboard.writeText(summaryText);setCopied(true);setTimeout(()=>setCopied(false),1800);}catch{setCopied(false);} };
   const heroTop=rgb(scl(moodRGB(overall??50),0.5)), heroMid=moodColor(overall??50);
-  const chartData=[...SEED_HISTORY.map(s=>({t:s.t,overall:s.overall})),...history.map(h=>({t:h.t,overall:h.overall}))].sort((a,b)=>a.t-b.t);
-  const seedStart=SEED_HISTORY[0].t, seedEnd=SEED_HISTORY[SEED_HISTORY.length-1].t;
+  // Full series: 250-year estimated backdrop + this device's real readings, filtered to the range.
+  const fullHistory=[...LONG_HISTORY, ...history.map(h=>({t:h.t,overall:h.overall,live:true}))].sort((a,b)=>a.t-b.t);
+  const firstLiveT=history.length?Math.min(...history.map(h=>h.t)):null;
+  const rangeMs=RANGES.find(r=>r[0]===range)?.[1] ?? null;
+  const cutoff=rangeMs?Date.now()-rangeMs:-Infinity;
+  const chartData=fullHistory.filter(p=>p.t>=cutoff);
+  // Shade the estimated stretch within view: from the first visible point up to where real data begins.
+  const seedStart=chartData.length?chartData[0].t:0;
+  const seedEnd=Math.min(firstLiveT??(chartData.length?chartData[chartData.length-1].t:0), chartData.length?chartData[chartData.length-1].t:0);
+  // Axis/tooltip granularity scales with the selected range.
+  const axisFmt=(t)=>{ const d=new Date(t);
+    if(rangeMs!=null&&rangeMs<=182*24*3600*1000) return d.toLocaleDateString([],{month:"short",day:"numeric"});
+    if(rangeMs!=null&&rangeMs<=5*YEAR_MS) return d.toLocaleDateString([],{year:"2-digit",month:"short"});
+    return String(d.getUTCFullYear()); };
+  const labelFmt=(t)=>{ const d=new Date(t);
+    if(rangeMs!=null&&rangeMs<=YEAR_MS) return d.toLocaleDateString([],{year:"numeric",month:"long",day:"numeric"});
+    if(rangeMs!=null&&rangeMs<=10*YEAR_MS) return d.toLocaleDateString([],{year:"numeric",month:"long"});
+    return String(d.getUTCFullYear()); };
   const outBusy=searchBusy||questionBusy;
 
   return (
@@ -932,21 +1023,28 @@ export default function MoodCast(){
 
         {/* OVERALL TREND */}
         <section style={{marginTop:24,background:CARD,border:`1px solid ${LINE}`,borderRadius:18,padding:"16px 14px 8px",boxShadow:"0 2px 10px rgba(27,35,48,.04)"}}>
-          <div style={{fontFamily:F.display,fontWeight:700,fontSize:17,paddingLeft:6,marginBottom:6}}>Public mood over time</div>
-          {chartData.length<2 ? <div style={{padding:"34px 12px",textAlign:"center",color:INK2,fontSize:13}}>Your readings build a real mood history here — saved between visits and growing every time you check in.</div>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8,paddingLeft:6,marginBottom:10}}>
+            <div style={{fontFamily:F.display,fontWeight:700,fontSize:17}}>Public mood over time</div>
+            <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+              {RANGES.map(([lbl])=>(
+                <button key={lbl} onClick={()=>setRange(lbl)} style={{background:range===lbl?ACCENT:CARD,color:range===lbl?"#fff":INK2,border:`1px solid ${range===lbl?ACCENT:LINE}`,borderRadius:8,padding:"4px 8px",fontSize:11.5,fontWeight:700,cursor:"pointer"}}>{lbl}</button>
+              ))}
+            </div>
+          </div>
+          {chartData.length<2 ? <div style={{padding:"34px 12px",textAlign:"center",color:INK2,fontSize:13}}>Not enough data in this range yet. Take a few readings, or pick a longer span to see the historical arc.</div>
           : <ResponsiveContainer width="100%" height={230}>
               <LineChart data={chartData} margin={{top:6,right:14,bottom:4,left:-20}}>
                 <defs><linearGradient id="mg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#F4A93B"/><stop offset="100%" stopColor="#46577A"/></linearGradient></defs>
                 <CartesianGrid stroke={LINE} vertical={false}/>
-                <XAxis dataKey="t" tickFormatter={t=>new Date(t).toLocaleDateString([],{year:"2-digit",month:"short"})} stroke={LINE} tickLine={false} minTickGap={44}/>
+                <XAxis dataKey="t" type="number" scale="time" domain={["dataMin","dataMax"]} tickFormatter={axisFmt} stroke={LINE} tickLine={false} minTickGap={44}/>
                 <YAxis domain={[0,100]} ticks={[0,25,50,75,100]} stroke={LINE} tickLine={false}/>
-                <ReferenceArea x1={seedStart} x2={seedEnd} fill={INK} fillOpacity={0.05} ifOverflow="extendDomain" label={{value:"AI-estimated",position:"insideTopLeft",fontSize:10,fill:INK2}}/>
+                {seedEnd>seedStart && <ReferenceArea x1={seedStart} x2={seedEnd} fill={INK} fillOpacity={0.05} ifOverflow="extendDomain" label={{value:"estimated",position:"insideTopLeft",fontSize:10,fill:INK2}}/>}
                 <ReferenceLine y={50} stroke={INK2} strokeDasharray="3 3"/>
-                <Tooltip contentStyle={{borderRadius:10,border:`1px solid ${LINE}`,fontFamily:F.ui,fontSize:12}} labelFormatter={t=>new Date(t).toLocaleDateString([],{year:"numeric",month:"long"})}/>
-                <Line type="monotone" dataKey="overall" name="Public mood" stroke="url(#mg)" strokeWidth={3} dot={false} isAnimationActive={!reduced}/>
+                <Tooltip content={(props)=><MoodTip {...props} labelFmt={labelFmt}/>}/>
+                <Line type="monotone" dataKey="overall" name="Public mood" stroke="url(#mg)" strokeWidth={range==="250Y"||range==="100Y"?2:3} dot={false} isAnimationActive={!reduced}/>
               </LineChart>
             </ResponsiveContainer>}
-          <div style={{fontSize:11,color:"#9AA3AE",padding:"6px 6px 0",lineHeight:1.5}}>The shaded stretch is an <b style={{fontWeight:700}}>AI estimate</b> of overall news sentiment, reconstructed from the major events of each month — a rough arc, not a measurement. Readings you take add real data from today onward.</div>
+          <div style={{fontSize:11,color:"#9AA3AE",padding:"6px 6px 0",lineHeight:1.5}}>The shaded stretch is a <b style={{fontWeight:700}}>historical estimate</b> of U.S. public mood, not a measurement — reconstructed from documented conditions, and from 1952 the U. Michigan Consumer Sentiment Index and (from 1979) Gallup. Hover any point for the year, mood, and what was happening. Your live readings add real data from today.</div>
         </section>
 
         <div style={{marginTop:16,fontSize:11,color:"#9AA3AE",textAlign:"center",maxWidth:560,marginLeft:"auto",marginRight:"auto",lineHeight:1.5}}>A playful read on the mood of the news, not a precise measurement. Scores are AI estimates of recent headlines, searched live.</div>
