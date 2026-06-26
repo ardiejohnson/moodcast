@@ -110,6 +110,28 @@ async function gradeQuery(query, n=4){
   return { mood, items };
 }
 
+/* ---- shared board: one latest reading every visitor sees (see api/board.js) ---- */
+async function loadBoardLatest(){
+  try{
+    const res=await fetch("/api/board",{cache:"no-store"});
+    if(!res.ok)return null;
+    const data=await res.json();
+    return data&&data.latest?data.latest:null; // { results, overall, t } | null
+  }catch{ return null; }
+}
+async function saveBoardLatest(results,overall){
+  // Strip per-device series; the server keeps only mood+items per entry.
+  const slim={};
+  for(const id in results){ const r=results[id]; if(!r)continue; slim[id]={mood:r.mood,items:r.items||[]}; }
+  try{
+    await fetch("/api/board",{
+      method:"POST",
+      headers:{ "Content-Type":"application/json", "x-moodcast-pass":PASSCODE },
+      body:JSON.stringify({ results:slim, overall }),
+    });
+  }catch{ /* best-effort; a failed publish must never break the local reading */ }
+}
+
 /* ----------------------- visuals ----------------------- */
 function Glyph({ mood, size=56 }){
   const t = glyphType(mood); const sun = moodColor(mood); const cloud="#A6AEB9"; const cloudHi="#C3CAD3"; const rain="#6E8BB0"; const bolt="#E9B84A";
@@ -174,6 +196,7 @@ export default function MoodCast(){
   const [busy,setBusy]=useState(false);
   const [history,setHistory]=useState([]);
   const [lastRun,setLastRun]=useState(null);
+  const [fromCrowd,setFromCrowd]=useState(false);
   const [error,setError]=useState(null);
   const [detail,setDetail]=useState(null);
   const [detailLoading,setDetailLoading]=useState(false);
@@ -206,6 +229,7 @@ export default function MoodCast(){
   useEffect(()=>{(async()=>{
     const h=await store.get("ms:history"); if(h)setHistory(h);
     const last=await store.get("ms:last"); if(last){setResults(last.results||{});setLastRun(last.t||null);}
+    const localT=last&&last.t?last.t:0;
     const r=await store.get("ms:recent"); if(r)setRecent(r);
     const sv=await store.get("ms:saved"); if(sv)setSaved(sv);
     const sn=await store.get("ms:sunny"); if(sn)setSunny(sn);
@@ -213,6 +237,15 @@ export default function MoodCast(){
     const st=await store.get("ms:settings"); if(st){ if(st.perCat)setPerCat(st.perCat); if(typeof st.includeFollows==="boolean")setIncludeFollows(st.includeFollows);
       if(typeof st.interval==="number")setIntervalMin(st.interval); if(Array.isArray(st.hiddenCats))setHiddenCats(st.hiddenCats); if(Array.isArray(st.catOrder))setCatOrder(st.catOrder); }
     setLoadedPrefs(true);
+    // Shared board: if the crowd's latest reading is newer than this device's,
+    // show it. Merge over local entries so personal trend sparklines survive.
+    const board=await loadBoardLatest();
+    if(board&&board.t&&board.t>localT){
+      setResults(prev=>{ const next={...prev};
+        for(const id in (board.results||{})){ const b=board.results[id]; next[id]={...next[id],mood:b.mood,items:b.items||[]}; }
+        return next; });
+      setLastRun(board.t); setFromCrowd(true);
+    }
   })();
     onAuthFail=()=>setGate(true);
     setReduced(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches);
@@ -239,7 +272,7 @@ export default function MoodCast(){
 
   const read=useCallback(async(entities,recordOverall=true)=>{
     if(busy||!entities.length)return; setBusy(true); setError(null); setLoadingIds(entities.map(e=>e.id));
-    const merged={...resultsRef.current}; let fail=0; const t=Date.now();
+    const merged={...resultsRef.current}; let fail=0; const t=Date.now(); if(recordOverall)setFromCrowd(false);
     for(let i=0;i<entities.length;i+=5){const batch=entities.slice(i,i+5);
       const res=await Promise.allSettled(batch.map(e=>gradeQuery(e.query,perCat)));
       res.forEach((r,j)=>{const id=batch[j].id;
@@ -251,6 +284,12 @@ export default function MoodCast(){
       if(all.length){const ov=Math.round(all.reduce((a,b)=>a+b,0)/all.length);const byCat={};CATEGORIES.forEach(c=>{if(merged[c.id]?.mood!=null)byCat[c.id]=merged[c.id].mood;});
         setHistory(h=>{const nh=[...h,{t,overall:ov,byCat}].slice(-240);store.set("ms:history",nh);return nh;});}}
     setLastRun(t); store.set("ms:last",{results:merged,t});
+    // Publish a full "Read today's sky" to the shared board so every visitor sees it.
+    if(recordOverall&&fail<entities.length){
+      const ovAll=CATEGORIES.map(c=>merged[c.id]?.mood).filter(x=>x!=null);
+      const ov=ovAll.length?Math.round(ovAll.reduce((a,b)=>a+b,0)/ovAll.length):null;
+      saveBoardLatest(merged,ov);
+    }
     if(fail===entities.length)setError("Couldn't reach the sky right now. Check your connection and try again.");
     setBusy(false);
   },[busy,perCat]);
@@ -406,7 +445,7 @@ export default function MoodCast(){
           </div>
           <div style={{position:"relative",marginTop:18,display:"flex",gap:10,flexWrap:"wrap",alignItems:"center"}}>
             <button onClick={()=>{setCopied(false);setShare(true);}} style={glassBtn}>Share today’s mood</button>
-            <div style={{fontSize:12,opacity:.8}}>updated {ago(lastRun)} · scale 0 (stormy) - 100 (radiant)</div>
+            <div style={{fontSize:12,opacity:.8}}>{lastRun?`last read ${ago(lastRun)}${fromCrowd?" by the crowd":""}`:"not read yet"} · scale 0 (stormy) - 100 (radiant)</div>
           </div>
         </section>
 
