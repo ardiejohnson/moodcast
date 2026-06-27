@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { LineChart, Line, XAxis, YAxis, ReferenceLine, ReferenceArea, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { geoNaturalEarth1, geoPath } from "d3-geo";
 import { feature as topoFeature } from "topojson-client";
+import { select } from "d3-selection";
+import { zoom as d3zoom, zoomIdentity } from "d3-zoom";
 import world110m from "./world-110m.json";
 
 /* ----------------------------------------------------------------------
@@ -545,22 +547,47 @@ const COUNTRY_PATHS = FIT_FC.features
 const BIG_COUNTRIES = ["United States of America","China","India","Russia","Brazil","United Kingdom","France","Germany","Japan","Ukraine","Israel","Mexico"];
 
 // Flat interactive world choropleth. Countries fill with their mood color;
-// hover for a tooltip, click to read that country's news.
+// hover for a tooltip, click to read that country's news. Scroll/drag/pinch or
+// the +/−/⤢ buttons to zoom and pan (d3-zoom; transform applied imperatively to
+// the <g> so the 176 paths don't re-render while zooming).
 function MoodMap({ moods, busy, onPick }){
-  const ref=useRef(null);
+  const ref=useRef(null), svgRef=useRef(null), gRef=useRef(null), zoomRef=useRef(null);
   const [hover,setHover]=useState(null); // { id, name, mood, x, y }
+  const [zoomed,setZoomed]=useState(false);
   const move=(c,e)=>{ const r=ref.current?.getBoundingClientRect(); if(!r)return;
     const ent=moods[c.id]; setHover({ id:c.id, name:c.name, mood:ent?ent.mood:null, x:e.clientX-r.left, y:e.clientY-r.top, w:r.width }); };
+  useEffect(()=>{
+    const svg=select(svgRef.current), g=select(gRef.current);
+    const z=d3zoom().scaleExtent([1,9]).translateExtent([[0,0],[MAP_W,MAP_H]])
+      .filter((e)=>{ // wheel + left-drag on desktop; require 2 fingers on touch so 1-finger scrolls the page
+        if(e.type==="wheel") return true;
+        if(e.type.startsWith("touch")) return e.touches && e.touches.length>=2;
+        return !e.button; })
+      .on("zoom",(e)=>{ g.attr("transform",e.transform.toString()); setZoomed(e.transform.k>1.05); });
+    svg.call(z).on("dblclick.zoom",null);
+    zoomRef.current=z;
+    return ()=>{ svg.on(".zoom",null); };
+  },[]);
+  const zoomBy=(f)=>{ try{ zoomRef.current.scaleBy(select(svgRef.current),f); }catch{} };
+  const reset=()=>{ try{ zoomRef.current.transform(select(svgRef.current),zoomIdentity); }catch{} };
+  const zBtn={width:30,height:30,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(255,255,255,.92)",border:`1px solid ${LINE}`,borderRadius:9,fontSize:17,fontWeight:800,color:INK,cursor:"pointer",boxShadow:"0 2px 6px rgba(27,35,48,.12)",lineHeight:1};
   return (
     <div ref={ref} onMouseLeave={()=>setHover(null)} style={{position:"relative",background:"linear-gradient(180deg,#EAF2FB,#F4F8FC)",border:`1px solid ${LINE}`,borderRadius:16,overflow:"hidden"}}>
-      <svg viewBox={`0 0 ${MAP_W} ${MAP_H}`} width="100%" style={{display:"block"}}>
-        {COUNTRY_PATHS.map(c=>{ const ent=moods[c.id]; const isBusy=busy&&busy.includes(c.id); const hot=hover&&hover.id===c.id;
-          return <path key={c.id} d={c.d}
-            fill={ent?moodColor(ent.mood):"#D7DFEA"} fillOpacity={isBusy?0.45:(ent?0.95:0.8)}
-            stroke={hot?INK:"#FBFCFE"} strokeWidth={hot?1.1:0.5}
-            onMouseMove={(e)=>move(c,e)} onClick={()=>onPick(c.id,c.name)}
-            style={{cursor:"pointer",transition:"fill .5s ease, fill-opacity .3s"}}/>; })}
+      <svg ref={svgRef} viewBox={`0 0 ${MAP_W} ${MAP_H}`} width="100%" style={{display:"block",cursor:"grab",touchAction:"pan-y"}}>
+        <g ref={gRef}>
+          {COUNTRY_PATHS.map(c=>{ const ent=moods[c.id]; const isBusy=busy&&busy.includes(c.id); const hot=hover&&hover.id===c.id;
+            return <path key={c.id} d={c.d}
+              fill={ent?moodColor(ent.mood):"#D7DFEA"} fillOpacity={isBusy?0.45:(ent?0.95:0.8)}
+              stroke={hot?INK:"#FBFCFE"} strokeWidth={hot?1.4:0.6} vectorEffect="non-scaling-stroke"
+              onMouseMove={(e)=>move(c,e)} onClick={()=>onPick(c.id,c.name)}
+              style={{cursor:"pointer",transition:"fill .5s ease, fill-opacity .3s"}}/>; })}
+        </g>
       </svg>
+      <div style={{position:"absolute",right:10,bottom:10,display:"flex",flexDirection:"column",gap:6}}>
+        <button onClick={()=>zoomBy(1.6)} title="Zoom in" style={zBtn}>+</button>
+        <button onClick={()=>zoomBy(1/1.6)} title="Zoom out" style={zBtn}>−</button>
+        {zoomed && <button onClick={reset} title="Reset" style={{...zBtn,fontSize:14}}>⤢</button>}
+      </div>
       {hover && <div style={{position:"absolute",left:Math.max(6,Math.min(hover.x+12,(hover.w||MAP_W)-150)),top:hover.y+12,pointerEvents:"none",background:"#fff",border:`1px solid ${LINE}`,borderRadius:9,padding:"6px 10px",fontSize:12,fontWeight:700,boxShadow:"0 6px 16px rgba(27,35,48,.16)",whiteSpace:"nowrap"}}>
         {hover.name}{hover.mood!=null?<> · <span style={{color:moodColor(hover.mood),fontWeight:800}}>{hover.mood}</span> <span style={{color:INK2,fontWeight:600}}>{moodWord(hover.mood)}</span></>:<span style={{color:INK2,fontWeight:600}}> · tap to read</span>}
       </div>}
