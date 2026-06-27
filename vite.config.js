@@ -71,7 +71,14 @@ function mockApiPlugin() {
           const system = String(body.system || '')
           const user = String(body.user || '')
           let text
-          if (system.includes('historian')) text = `[MOCK] ${(user.match(/Time:\s*(.+?)\./)?.[1] || 'This period')} was shaped by the major economic and political currents of its day — booms, busts, wars, and shifting public confidence. (Local mock; the real app returns a researched paragraph.)`
+          if (system.includes('"sites"')) {
+            const country = (user.match(/Country:\s*(.+?)\./)?.[1] || 'Country').trim()
+            text = JSON.stringify({ sites: [
+              { name: `${country} Daily`, url: 'https://example.com', lang: 'Local' },
+              { name: `${country} Times`, url: 'https://example.org', lang: 'Local' },
+              { name: 'National Broadcaster', url: 'https://example.net', lang: 'English' },
+            ] })
+          } else if (system.includes('historian')) text = `[MOCK] ${(user.match(/Time:\s*(.+?)\./)?.[1] || 'This period')} was shaped by the major economic and political currents of its day — booms, busts, wars, and shifting public confidence. (Local mock; the real app returns a researched paragraph.)`
           else text = system.includes('"items"') ? gradeMock(system, user) : answerMock(system, user)
           res.setHeader('content-type', 'application/json')
           res.end(JSON.stringify({ text, mocked: true }))

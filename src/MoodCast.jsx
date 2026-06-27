@@ -215,6 +215,22 @@ async function saveWorldCountry(code,mood,items,label){
     body:JSON.stringify({ code, mood, items:(items||[]).slice(0,4), label }) });
   }catch{ /* best-effort */ }
 }
+// Wrap a URL in Google's website-translate proxy (auto → English).
+function translateUrl(url){
+  try{ const u=new URL(url); const host=u.hostname.replace(/-/g,"--").replace(/\./g,"-");
+    return `https://${host}.translate.goog${u.pathname||"/"}${u.search?u.search+"&":"?"}_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en`;
+  }catch{ return url; }
+}
+// Ask the model for a country's top native news websites (cached per country).
+async function fetchCountrySites(label){
+  const sys=`You list real, currently-operating top news websites for a country. Respond ONLY valid JSON, no markdown: {"sites":[{"name":"<outlet name>","url":"<homepage https url>","lang":"<primary language in English, e.g. Khmer>"}]}. Give the 5 most prominent general-news outlets actually based in the country. Real homepages only.`;
+  try{ const txt=await callModel(sys,`Country: ${label}. List its top 5 news websites.`);
+    const p=parseJson(txt); const sites=(p&&Array.isArray(p.sites)?p.sites:[])
+      .map(s=>({ name:String(s.name||"").slice(0,60), url:(typeof s.url==="string"&&/^https?:\/\//.test(s.url))?s.url:"", lang:String(s.lang||"").slice(0,24) }))
+      .filter(s=>s.name&&s.url).slice(0,6);
+    return sites;
+  }catch{ return []; }
+}
 
 /* ---- Yay/Boo crowd votes (see api/vote.js) ---- */
 // Anonymous, stable per browser. Only used to dedup/switch a voter's own vote.
@@ -566,6 +582,7 @@ export default function MoodCast(){
   const [commentCounts,setCommentCounts]=useState({}); // { id: n }
   const [commentsFor,setCommentsFor]=useState(null);   // { id, label } | null
   const [articlesModal,setArticlesModal]=useState(null); // { label, mood, items } | null
+  const [moreBusy,setMoreBusy]=useState([]); // context keys currently loading more articles
   const [topArts,setTopArts]=useState({sunny:null,cloudy:null}); // crowd's picks
   const [worldMoods,setWorldMoods]=useState({}); // { code: {mood,items,t,label} }
   const [worldSel,setWorldSel]=useState(null);   // selected country panel
@@ -739,22 +756,43 @@ export default function MoodCast(){
 
   // ---- Mood Map ----
   useEffect(()=>{ fetchWorld().then(setWorldMoods); },[]);
-  const gradeCountry=useCallback(async(code,label)=>{
+  const gradeCountry=useCallback(async(code,label,n)=>{
+    const count=n||Math.min(4,perCat);
     setWorldBusy(b=>b.includes(code)?b:[...b,code]);
-    try{ const r=await gradeQuery(`current public mood and the most significant recent news in ${label}`, Math.min(4,perCat));
-      if(r.mood!=null){ const entry={mood:r.mood,items:r.items,t:Date.now(),label};
+    try{ const r=await gradeQuery(`current public mood and the most significant recent news in ${label}`, count);
+      if(r.mood!=null){ const entry={mood:r.mood,items:r.items,t:Date.now(),label,n:count};
         setWorldMoods(m=>({...m,[code]:entry})); saveWorldCountry(code,r.mood,r.items,label); return entry; }
     }catch{} finally{ setWorldBusy(b=>b.filter(x=>x!==code)); }
     return null;
   },[perCat]);
+  // Top native news sites per country (cached locally + in state).
+  const [worldSites,setWorldSites]=useState({}); // { code: [{name,url,lang}] }
+  const [sitesBusy,setSitesBusy]=useState([]);
+  const [siteLang,setSiteLang]=useState("orig"); // "orig" | "en"
+  const ensureCountrySites=useCallback(async(code,label)=>{
+    if(worldSites[code]||sitesBusy.includes(code))return;
+    const cached=await store.get("ms:sites:"+code); if(cached){ setWorldSites(s=>({...s,[code]:cached})); return; }
+    setSitesBusy(b=>[...b,code]);
+    const sites=await fetchCountrySites(label);
+    if(sites.length){ setWorldSites(s=>({...s,[code]:sites})); store.set("ms:sites:"+code,sites); }
+    setSitesBusy(b=>b.filter(x=>x!==code));
+  },[worldSites,sitesBusy]);
   const onPickCountry=useCallback(async(code,label)=>{
+    ensureCountrySites(code,label);
     const ex=worldMoods[code];
     if(ex){ setWorldSel({code,label,mood:ex.mood,items:ex.items,loading:false}); return; }
     if(worldBusy.includes(code))return;
     setWorldSel({code,label,loading:true});
     const entry=await gradeCountry(code,label);
     setWorldSel(s=>s&&s.code===code?(entry?{code,label,mood:entry.mood,items:entry.items,loading:false}:{code,label,error:true,loading:false}):s);
-  },[worldMoods,worldBusy,gradeCountry]);
+  },[worldMoods,worldBusy,gradeCountry,ensureCountrySites]);
+  const loadMoreCountry=async()=>{ if(!worldSel||worldSel.loading)return; const code=worldSel.code; const key="country:"+code; if(moreBusy.includes(key))return;
+    const cur=worldMoods[code]; const n=Math.min(MORE_CAP,(cur?.n||Math.min(4,perCat))+3);
+    setMoreBusy(b=>[...b,key]);
+    const entry=await gradeCountry(code,worldSel.label,n);
+    if(entry)setWorldSel(s=>s&&s.code===code?{...s,mood:entry.mood,items:entry.items}:s);
+    setMoreBusy(b=>b.filter(x=>x!==key));
+  };
   const readBigCountries=async()=>{
     if(worldAllBusy)return; setWorldAllBusy(true);
     for(const c of COUNTRY_PATHS.filter(c=>BIG_COUNTRIES.includes(c.name))){ if(!worldMoods[c.id]) await gradeCountry(c.id,c.name); }
@@ -782,15 +820,31 @@ export default function MoodCast(){
   const openEntity=async(kind,ent)=>{
     setDetail({kind,id:ent.id});
     if(kind==="cat"){ if(resultsRef.current[ent.id]?.subs)return;
-      setDetailLoading(true); const subs={};
-      for(let i=0;i<ent.subs.length;i+=4){const batch=ent.subs.slice(i,i+4);
-        const res=await Promise.allSettled(batch.map(s=>gradeQuery(s.query,Math.min(3,perCat))));
-        res.forEach((r,j)=>{subs[batch[j].id]=r.status==="fulfilled"?r.value:{mood:null,items:[]};});}
+      setDetailLoading(true); const subs={}; const n0=Math.min(3,perCat);
+      for(let i=0;i<ent.subs.length;i+=4){const batch=ent.subs.slice(i,i+4);const t=Date.now();
+        const res=await Promise.allSettled(batch.map(s=>gradeQuery(s.query,n0)));
+        res.forEach((r,j)=>{subs[batch[j].id]=r.status==="fulfilled"?{...r.value,t,n:n0}:{mood:null,items:[]};});}
       setResults(s=>({...s,[ent.id]:{...s[ent.id],subs}})); setDetailLoading(false);
     } else { if(resultsRef.current[ent.id]?.items?.length)return;
       setDetailLoading(true); try{const r=await gradeQuery(ent.query,perCat);const t=Date.now();
-        setResults(s=>({...s,[ent.id]:{...s[ent.id],mood:r.mood,items:r.items,series:appendSeries(s[ent.id]?.series,r.mood,t),t}}));}catch{} setDetailLoading(false);
+        setResults(s=>({...s,[ent.id]:{...s[ent.id],mood:r.mood,items:r.items,series:appendSeries(s[ent.id]?.series,r.mood,t),t,n:perCat}}));}catch{} setDetailLoading(false);
     }
+  };
+  // "Load 3 more" — re-read a context with +3 headlines (capped at 12). Per-card.
+  const MORE_CAP=12;
+  const loadMoreSub=async(catId,sub)=>{ const key="sub:"+catId+":"+sub.id; if(moreBusy.includes(key))return;
+    const cur=resultsRef.current[catId]?.subs?.[sub.id]; const n=Math.min(MORE_CAP,(cur?.n||Math.min(3,perCat))+3);
+    setMoreBusy(b=>[...b,key]);
+    try{ const r=await gradeQuery(sub.query,n);
+      setResults(s=>({...s,[catId]:{...s[catId],subs:{...s[catId].subs,[sub.id]:{mood:r.mood,items:r.items,t:Date.now(),n}}}})); }catch{}
+    setMoreBusy(b=>b.filter(x=>x!==key));
+  };
+  const loadMoreSaved=async(ent)=>{ const key="ent:"+ent.id; if(moreBusy.includes(key))return;
+    const cur=resultsRef.current[ent.id]; const n=Math.min(MORE_CAP,(cur?.n||perCat)+3);
+    setMoreBusy(b=>[...b,key]);
+    try{ const r=await gradeQuery(ent.query,n); const t=Date.now();
+      setResults(s=>({...s,[ent.id]:{...s[ent.id],mood:r.mood,items:r.items,t,n}})); }catch{}
+    setMoreBusy(b=>b.filter(x=>x!==key));
   };
 
   const looksLikeQuestion=(s)=>{ const x=s.trim(); if(!x)return false; if(x.endsWith("?"))return true;
@@ -1186,8 +1240,27 @@ export default function MoodCast(){
             <div style={{padding:"14px 16px",background:PAPER}}>
               {worldSel.loading ? <div style={{display:"flex",alignItems:"center",gap:10,color:INK,fontWeight:600,fontSize:13.5,padding:"6px 0"}}><Spinner size={18} color={ACCENT}/>Searching {worldSel.label}’s headlines and gauging the mood<Dots/></div>
                : worldSel.error ? <div style={{color:INK2,fontSize:13.5}}>Couldn’t reach {worldSel.label} right now — tap Refresh to try again.</div>
-               : worldSel.items&&worldSel.items.length ? <ul style={{listStyle:"none",margin:0,padding:0,display:"grid",gap:9}}>{worldSel.items.map((it,i)=><Headline key={i} it={it}/>)}</ul>
-               : <div style={{color:INK2,fontSize:13.5}}>No headlines surfaced for {worldSel.label}.</div>}
+               : <>
+                 {worldSel.items&&worldSel.items.length ? <ul style={{listStyle:"none",margin:0,padding:0,display:"grid",gap:9}}>{worldSel.items.map((it,i)=><Headline key={i} it={it}/>)}</ul>
+                  : <div style={{color:INK2,fontSize:13.5}}>No headlines surfaced for {worldSel.label}.</div>}
+                 {worldSel.items&&worldSel.items.length>0&&(worldMoods[worldSel.code]?.n||0)<MORE_CAP&&<button onClick={loadMoreCountry} disabled={moreBusy.includes("country:"+worldSel.code)} style={{marginTop:10,width:"100%",background:"transparent",border:`1px dashed ${LINE}`,borderRadius:10,padding:"9px 0",fontSize:12.5,fontWeight:700,color:INK2,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>{moreBusy.includes("country:"+worldSel.code)?<><Spinner size={14}/>Loading</>:"+ 3 more articles"}</button>}
+                 {/* Top native news sites with translate toggle */}
+                 <div style={{marginTop:16,borderTop:`1px solid ${LINE}`,paddingTop:12}}>
+                   <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:8}}>
+                     <div style={{fontFamily:F.display,fontWeight:700,fontSize:14,color:INK2}}>Top news sites in {worldSel.label}</div>
+                     <div style={{display:"flex",background:CARD,border:`1px solid ${LINE}`,borderRadius:999,padding:2}}>
+                       <button onClick={()=>setSiteLang("orig")} style={{border:"none",borderRadius:999,padding:"4px 10px",fontSize:11.5,fontWeight:700,cursor:"pointer",background:siteLang==="orig"?ACCENT:"transparent",color:siteLang==="orig"?"#fff":INK2}}>Original</button>
+                       <button onClick={()=>setSiteLang("en")} style={{border:"none",borderRadius:999,padding:"4px 10px",fontSize:11.5,fontWeight:700,cursor:"pointer",background:siteLang==="en"?ACCENT:"transparent",color:siteLang==="en"?"#fff":INK2}}>English</button>
+                     </div>
+                   </div>
+                   {sitesBusy.includes(worldSel.code) ? <div style={{display:"flex",alignItems:"center",gap:8,color:INK2,fontSize:12.5}}><Spinner size={14}/>Finding {worldSel.label}’s news sites<Dots/></div>
+                    : (worldSites[worldSel.code]&&worldSites[worldSel.code].length) ? <div style={{display:"flex",flexWrap:"wrap",gap:8}}>{worldSites[worldSel.code].map((st,i)=>(
+                        <a key={i} href={siteLang==="en"?translateUrl(st.url):st.url} target="_blank" rel="noreferrer" style={{display:"inline-flex",alignItems:"center",gap:6,background:CARD,border:`1px solid ${LINE}`,borderRadius:999,padding:"6px 12px",fontSize:12.5,fontWeight:700,color:INK,textDecoration:"none"}}>
+                          🌐 {st.name}{st.lang?<span style={{color:"#9AA3AE",fontWeight:600,fontSize:11}}>· {st.lang}</span>:null}</a>))}</div>
+                    : <div style={{color:"#9AA3AE",fontSize:12.5}}>No sites found.</div>}
+                   {siteLang==="en"&&worldSites[worldSel.code]?.length>0&&<div style={{fontSize:11,color:"#9AA3AE",marginTop:7}}>Opens via Google’s site translator (auto → English).</div>}
+                 </div>
+                 </>}
             </div>
           </div>}
         </section>
@@ -1262,15 +1335,17 @@ export default function MoodCast(){
                   {ent.subs.map(s=>{const sd=d?.subs?.[s.id];const subLoading=!sd&&detailLoading;return (
                     <div key={s.id} className={subLoading?"busy-card":undefined} style={{background:CARD,border:`1px solid ${subLoading?"#CFE0FA":LINE}`,borderRadius:14,padding:"12px 14px"}}>
                       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
-                        <div style={{display:"flex",alignItems:"center",gap:10}}>{subLoading?<Spinner size={26} color={ACCENT}/>:<Glyph mood={sd?.mood} size={30}/>}<div style={{fontWeight:700,fontSize:14}}>{s.label}</div></div>
+                        <div style={{display:"flex",alignItems:"center",gap:10}}>{subLoading?<Spinner size={26} color={ACCENT}/>:<Glyph mood={sd?.mood} size={30}/>}<div><div style={{fontWeight:700,fontSize:14}}>{s.label}</div>{!subLoading&&sd?.t&&<div style={{fontSize:10.5,color:"#9AA3AE",fontWeight:600,marginTop:1}}>updated {ago(sd.t)}</div>}</div></div>
                         {subLoading?<div style={{display:"flex",alignItems:"center",gap:6,fontSize:12.5,fontWeight:700,color:ACCENT}}>Reading<Dots color={ACCENT}/></div>:<div style={{fontFamily:F.display,fontWeight:800,fontSize:22,color:moodColor(sd?.mood)}}>{sd?.mood??"——"}</div>}</div>
                       {sd?.items?.length>0 && <ul style={{listStyle:"none",margin:"10px 0 0",padding:0,display:"grid",gap:8}}>{sd.items.map((it,i)=><Headline key={i} it={it} small/>)}</ul>}
+                      {!subLoading&&sd?.items?.length>0&&(sd?.n||0)<MORE_CAP&&<button onClick={()=>loadMoreSub(ent.id,s)} disabled={moreBusy.includes("sub:"+ent.id+":"+s.id)} style={{marginTop:10,width:"100%",background:"transparent",border:`1px dashed ${LINE}`,borderRadius:10,padding:"7px 0",fontSize:12,fontWeight:700,color:INK2,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>{moreBusy.includes("sub:"+ent.id+":"+s.id)?<><Spinner size={13}/>Loading</>:"+ 3 more articles"}</button>}
                     </div>);})}
                 </div>
               </>) : (<>
                 <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,margin:"22px 0 10px"}}>Recent headlines</div>
                 {detailLoading && !d?.items?.length && <div style={{color:INK,fontSize:13.5,fontWeight:600,padding:"11px 14px",display:"flex",alignItems:"center",gap:10,background:"#EEF4FF",border:`1px solid #D6E4FB`,borderRadius:12}}><Spinner size={18} color={ACCENT}/>Reading the latest headlines<Dots/></div>}
                 {d?.items?.length>0 && <ul style={{listStyle:"none",margin:0,padding:14,display:"grid",gap:9,background:CARD,border:`1px solid ${LINE}`,borderRadius:14}}>{d.items.map((it,i)=><Headline key={i} it={it}/>)}</ul>}
+                {d?.items?.length>0&&(d?.n||0)<MORE_CAP&&<button onClick={()=>loadMoreSaved(ent)} disabled={moreBusy.includes("ent:"+ent.id)} style={{marginTop:10,width:"100%",background:"transparent",border:`1px dashed ${LINE}`,borderRadius:10,padding:"9px 0",fontSize:12.5,fontWeight:700,color:INK2,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>{moreBusy.includes("ent:"+ent.id)?<><Spinner size={14}/>Loading</>:"+ 3 more articles"}</button>}
               </>)}
             </div>
           </div>
