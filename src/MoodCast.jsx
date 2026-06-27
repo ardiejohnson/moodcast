@@ -915,6 +915,7 @@ export default function MoodCast(){
       `}</style>
 
       <div className="ms" style={{maxWidth:1080,margin:"0 auto"}}>
+        <a href="https://ardiejohnson.com" style={{display:"inline-flex",alignItems:"center",gap:6,background:CARD,border:`1px solid ${LINE}`,borderRadius:999,padding:"5px 12px",fontSize:12.5,fontWeight:700,color:INK,textDecoration:"none",marginBottom:12}}>← ardiejohnson.com</a>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,gap:10}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
             <Glyph mood={overall} size={34}/>
