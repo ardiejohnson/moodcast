@@ -705,6 +705,8 @@ export default function MoodCast(){
   const [yearNote,setYearNote]=useState(null); // { t, label, mood, ev, live, text, loading }
   const [chartCountry,setChartCountry]=useState(null); // { code, label } | null — scopes the trend chart
   const [knownPoints,setKnownPoints]=useState({}); // { scope: [{t,title}] } — shared queried points
+  const [view,setView]=useState(null); // {start,end} custom pan/zoom window, or null = range default
+  const chartWrapRef=useRef(null), domRef=useRef(null), boundsRef=useRef([0,1]), pannedRef=useRef(false), ptrsRef=useRef(new Map()), pinchRef=useRef(null);
   const [countrySeries,setCountrySeries]=useState({}); // { code: [points] }
   const [csBusy,setCsBusy]=useState([]); // codes whose history is generating
   // settings + view prefs
@@ -1057,43 +1059,62 @@ export default function MoodCast(){
     ? [...LONG_HISTORY, ...history.map(h=>({t:h.t,overall:h.overall,live:true}))].sort((a,b)=>a.t-b.t)
     : [ ...(countrySeries[scopedCountry.code]||[]), ...(worldMoods[scopedCountry.code]?[{t:worldMoods[scopedCountry.code].t,overall:worldMoods[scopedCountry.code].mood,live:true}]:[]) ].sort((a,b)=>a.t-b.t);
   const firstLiveT=useDefault?(history.length?Math.min(...history.map(h=>h.t)):null):(worldMoods[scopedCountry.code]?.t??null);
+  // Visible window: a range-button default, or the user's panned/zoomed view.
+  const dataMin=fullHistory.length?fullHistory[0].t:Date.now();
+  const dataMax=Math.max(fullHistory.length?fullHistory[fullHistory.length-1].t:Date.now(), Date.now());
   const rangeMs=RANGES.find(r=>r[0]===range)?.[1] ?? null;
-  const cutoff=rangeMs?Date.now()-rangeMs:-Infinity;
+  const defWin={ start: rangeMs?Math.max(dataMin,dataMax-rangeMs):dataMin, end:dataMax };
+  const dom = view || defWin;
+  const spanMs = Math.max(1, dom.end-dom.start);
+  domRef.current=dom; boundsRef.current=[dataMin,dataMax];
   // Shared queried-point markers for the current scope → titles on the tooltip + dots.
   const noteScope=scopedCountry?scopedCountry.code:"us";
   const known=knownPoints[noteScope]||[];
   const knownByT={}; known.forEach(kp=>{ knownByT[kp.t]={title:kp.title,mood:kp.mood}; });
   // A queried point's focused mood (when present) corrects the coarse series value.
-  const chartData=fullHistory.filter(p=>p.t>=cutoff).map(p=>{ const k=knownByT[p.t]; if(!k)return p;
+  // The X-axis domain clips to the window, so we keep the whole series in `data`.
+  const chartData=fullHistory.map(p=>{ const k=knownByT[p.t]; if(!k)return p;
     return {...p, ev:k.title||p.ev, overall:(k.mood!=null?k.mood:p.overall), known:true}; });
   const chartDots=known.map(kp=>{ const pt=chartData.find(d=>d.t===kp.t); return pt?{t:kp.t,y:pt.overall,title:kp.title}:null; }).filter(Boolean);
-  // Shade the estimated stretch within view: from the first visible point up to where real data begins.
-  const seedStart=chartData.length?chartData[0].t:0;
-  const seedEnd=Math.min(firstLiveT??(chartData.length?chartData[chartData.length-1].t:0), chartData.length?chartData[chartData.length-1].t:0);
-  // Axis/tooltip granularity scales with the selected range.
+  const seedStart=Math.max(dom.start,dataMin), seedEnd=Math.min(firstLiveT??dataMax, dom.end);
+  // Axis/tooltip granularity scales with the visible span.
   const axisFmt=(t)=>{ const d=new Date(t);
-    if(rangeMs!=null&&rangeMs<=182*24*3600*1000) return d.toLocaleDateString([],{month:"short",day:"numeric"});
-    if(rangeMs!=null&&rangeMs<=5*YEAR_MS) return d.toLocaleDateString([],{year:"2-digit",month:"short"});
+    if(spanMs<=182*24*3600*1000) return d.toLocaleDateString([],{month:"short",day:"numeric"});
+    if(spanMs<=5*YEAR_MS) return d.toLocaleDateString([],{year:"2-digit",month:"short"});
     return String(d.getUTCFullYear()); };
   const labelFmt=(t)=>{ const d=new Date(t);
-    if(rangeMs!=null&&rangeMs<=YEAR_MS) return d.toLocaleDateString([],{year:"numeric",month:"long",day:"numeric"});
-    if(rangeMs!=null&&rangeMs<=10*YEAR_MS) return d.toLocaleDateString([],{year:"numeric",month:"long"});
+    if(spanMs<=YEAR_MS) return d.toLocaleDateString([],{year:"numeric",month:"long",day:"numeric"});
+    if(spanMs<=10*YEAR_MS) return d.toLocaleDateString([],{year:"numeric",month:"long"});
     return String(d.getUTCFullYear()); };
+  // ---- pan / zoom on the chart (view window in time) ----
+  const MIN_SPAN=18*24*3600*1000;
+  const clampWin=(s,e)=>{ const [mn,mx]=boundsRef.current; const full=Math.max(MIN_SPAN,mx-mn);
+    let span=Math.min(Math.max(e-s,MIN_SPAN),full); const mid=(s+e)/2; let start=mid-span/2,end=mid+span/2;
+    if(start<mn){start=mn;end=mn+span;} if(end>mx){end=mx;start=mx-span;} if(start<mn)start=mn; return {start,end}; };
+  const curSpan=()=>domRef.current.end-domRef.current.start;
+  const pxToT=(clientX)=>{ const r=chartWrapRef.current?.getBoundingClientRect(); if(!r)return domRef.current.start; const f=Math.min(1,Math.max(0,(clientX-r.left-22)/(r.width-30))); return domRef.current.start+f*curSpan(); };
+  const panByPx=(dx)=>{ const r=chartWrapRef.current?.getBoundingClientRect(); const w=r?(r.width-30):600; const dt=-(dx/w)*curSpan(); const d=domRef.current; setView(clampWin(d.start+dt,d.end+dt)); };
+  const zoomAt=(factor,centerT)=>{ const d=domRef.current; const span=d.end-d.start; const ns=Math.min(Math.max(span*factor,MIN_SPAN),Math.max(MIN_SPAN,boundsRef.current[1]-boundsRef.current[0])); const ratio=Math.min(1,Math.max(0,(centerT-d.start)/span)); const start=centerT-ratio*ns; setView(clampWin(start,start+ns)); };
+  const chartPointerDown=(e)=>{ try{chartWrapRef.current?.setPointerCapture?.(e.pointerId);}catch{} ptrsRef.current.set(e.pointerId,e.clientX); pannedRef.current=false;
+    if(ptrsRef.current.size===2){ const xs=[...ptrsRef.current.values()]; pinchRef.current={d:Math.abs(xs[0]-xs[1])||1,c:pxToT((xs[0]+xs[1])/2)}; } };
+  const chartPointerMove=(e)=>{ if(!ptrsRef.current.has(e.pointerId))return; const prev=ptrsRef.current.get(e.pointerId);
+    if(ptrsRef.current.size===2){ ptrsRef.current.set(e.pointerId,e.clientX); const xs=[...ptrsRef.current.values()]; const nd=Math.abs(xs[0]-xs[1])||1; const pr=pinchRef.current; if(pr){ pannedRef.current=true; zoomAt(pr.d/nd,pr.c); pinchRef.current={d:nd,c:pr.c}; } return; }
+    const dx=e.clientX-prev; ptrsRef.current.set(e.pointerId,e.clientX); if(Math.abs(dx)>3)pannedRef.current=true; if(pannedRef.current)panByPx(dx); };
+  const chartPointerUp=(e)=>{ ptrsRef.current.delete(e.pointerId); if(ptrsRef.current.size<2)pinchRef.current=null; };
+  useEffect(()=>{ const el=chartWrapRef.current; if(!el)return;
+    const onWheel=(e)=>{ e.preventDefault(); zoomAt(e.deltaY>0?1.2:0.84, pxToT(e.clientX)); };
+    el.addEventListener("wheel",onWheel,{passive:false}); return ()=>el.removeEventListener("wheel",onWheel);
+  },[]); // eslint-disable-line
+  // Reset the window when the range button or country scope changes.
+  useEffect(()=>{ setView(null); },[range,chartCountry]);
   const pointLabel=(p)=>{ const d=new Date(p.t); const y=d.getUTCFullYear();
     return p.live?d.toLocaleDateString([],{year:"numeric",month:"long",day:"numeric"}):(y<=2019?String(y):d.toLocaleDateString([],{year:"numeric",month:"long"})); };
   const onChartClick=async(e)=>{
+    if(pannedRef.current){ pannedRef.current=false; return; } // a drag/zoom, not a tap
     // Recharts gives activePayload on click; fall back to activeLabel→nearest point.
     let p=e&&e.activePayload&&e.activePayload[0]&&e.activePayload[0].payload;
     const tapT=(e&&e.activeLabel!=null)?e.activeLabel:(p?p.t:null);
     if(!p && tapT!=null) p=chartData.reduce((best,d)=>(best&&Math.abs(best.t-tapT)<=Math.abs(d.t-tapT))?best:d, null);
-    // Snap to the nearest existing dot when the tap lands within a range-scaled
-    // window — so on mobile you reliably hit a marker instead of the next year.
-    if(tapT!=null && chartDots.length){
-      const span=rangeMs!=null?rangeMs:(chartData.length?(chartData[chartData.length-1].t-chartData[0].t):0);
-      const snapWin=Math.max(YEAR_MS*0.5, span*0.09); // ~9% of the visible span, min 6 months
-      let best=null,bd=Infinity; for(const dd of chartDots){ const dist=Math.abs(dd.t-tapT); if(dist<bd){bd=dist;best=dd;} }
-      if(best && bd<=snapWin){ const dp=chartData.find(x=>x.t===best.t); if(dp)p=dp; }
-    }
     if(!p)return;
     const label=pointLabel(p);
     const scope=scopedCountry?scopedCountry.code:"us";
@@ -1476,26 +1497,33 @@ export default function MoodCast(){
             </div>
             <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
               {RANGES.map(([lbl])=>(
-                <button key={lbl} onClick={()=>setRange(lbl)} style={{background:range===lbl?ACCENT:CARD,color:range===lbl?"#fff":INK2,border:`1px solid ${range===lbl?ACCENT:LINE}`,borderRadius:8,padding:"4px 8px",fontSize:11.5,fontWeight:700,cursor:"pointer"}}>{lbl}</button>
+                <button key={lbl} onClick={()=>{setRange(lbl);setView(null);}} style={{background:(range===lbl&&!view)?ACCENT:CARD,color:(range===lbl&&!view)?"#fff":INK2,border:`1px solid ${(range===lbl&&!view)?ACCENT:LINE}`,borderRadius:8,padding:"4px 8px",fontSize:11.5,fontWeight:700,cursor:"pointer"}}>{lbl}</button>
               ))}
             </div>
           </div>
           {cSeriesLoading ? <div style={{padding:"40px 12px",textAlign:"center",color:INK,fontSize:13.5,fontWeight:600,display:"flex",alignItems:"center",justifyContent:"center",gap:10}}><Spinner size={18} color={ACCENT}/>Building {scopedCountry?.label}’s mood history<Dots/></div>
           : chartData.length<2 ? <div style={{padding:"34px 12px",textAlign:"center",color:INK2,fontSize:13}}>{scopedCountry?`No history for ${scopedCountry.label} in this range yet.`:"Not enough data in this range yet. Take a few readings, or pick a longer span to see the historical arc."}</div>
-          : <ResponsiveContainer width="100%" height={230}>
-              <LineChart data={chartData} margin={{top:6,right:14,bottom:4,left:-20}} onClick={onChartClick} style={{cursor:"pointer"}}>
+          : <div ref={chartWrapRef} onPointerDown={chartPointerDown} onPointerMove={chartPointerMove} onPointerUp={chartPointerUp} onPointerCancel={chartPointerUp} style={{position:"relative",touchAction:"pan-y",cursor:"grab"}}>
+            <ResponsiveContainer width="100%" height={230}>
+              <LineChart data={chartData} margin={{top:6,right:14,bottom:4,left:-20}} onClick={onChartClick}>
                 <defs><linearGradient id="mg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#F4A93B"/><stop offset="100%" stopColor="#46577A"/></linearGradient></defs>
                 <CartesianGrid stroke={LINE} vertical={false}/>
-                <XAxis dataKey="t" type="number" scale="time" domain={["dataMin","dataMax"]} tickFormatter={axisFmt} stroke={LINE} tickLine={false} minTickGap={44}/>
+                <XAxis dataKey="t" type="number" domain={[dom.start,dom.end]} allowDataOverflow tickFormatter={axisFmt} stroke={LINE} tickLine={false} minTickGap={44}/>
                 <YAxis domain={[0,100]} ticks={[0,25,50,75,100]} stroke={LINE} tickLine={false}/>
-                {seedEnd>seedStart && <ReferenceArea x1={seedStart} x2={seedEnd} fill={INK} fillOpacity={0.05} ifOverflow="extendDomain" label={{value:"estimated",position:"insideTopLeft",fontSize:10,fill:INK2}}/>}
+                {seedEnd>seedStart && <ReferenceArea x1={seedStart} x2={seedEnd} fill={INK} fillOpacity={0.05} ifOverflow="hidden" label={{value:"estimated",position:"insideTopLeft",fontSize:10,fill:INK2}}/>}
                 <ReferenceLine y={50} stroke={INK2} strokeDasharray="3 3"/>
                 <Tooltip content={(props)=><MoodTip {...props} labelFmt={labelFmt}/>}/>
-                <Line type="monotone" dataKey="overall" name="Public mood" stroke="url(#mg)" strokeWidth={range==="250Y"||range==="100Y"?2:3} dot={false} isAnimationActive={!reduced}/>
+                <Line type="monotone" dataKey="overall" name="Public mood" stroke="url(#mg)" strokeWidth={spanMs>50*YEAR_MS?2:3} dot={false} isAnimationActive={false}/>
                 {chartDots.map(d=><ReferenceDot key={"k"+d.t} x={d.t} y={d.y} r={4} fill={moodColor(d.y)} stroke="#fff" strokeWidth={1.6} ifOverflow="hidden"/>)}
                 {yearNote && <ReferenceDot x={yearNote.t} y={yearNote.mood} r={6.5} fill={moodColor(yearNote.mood)} stroke="#fff" strokeWidth={2.5} ifOverflow="hidden" isFront/>}
               </LineChart>
-            </ResponsiveContainer>}
+            </ResponsiveContainer>
+            <div style={{position:"absolute",right:8,top:8,display:"flex",flexDirection:"column",gap:5}}>
+              <button onClick={()=>zoomAt(0.6,(dom.start+dom.end)/2)} title="Zoom in" style={{width:26,height:26,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(255,255,255,.94)",border:`1px solid ${LINE}`,borderRadius:7,fontSize:16,fontWeight:800,color:INK,cursor:"pointer",lineHeight:1}}>+</button>
+              <button onClick={()=>zoomAt(1.7,(dom.start+dom.end)/2)} title="Zoom out" style={{width:26,height:26,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(255,255,255,.94)",border:`1px solid ${LINE}`,borderRadius:7,fontSize:16,fontWeight:800,color:INK,cursor:"pointer",lineHeight:1}}>−</button>
+              {view && <button onClick={()=>setView(null)} title="Reset" style={{width:26,height:26,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(255,255,255,.94)",border:`1px solid ${LINE}`,borderRadius:7,fontSize:12,fontWeight:800,color:INK,cursor:"pointer",lineHeight:1}}>⤢</button>}
+            </div>
+          </div>}
           {yearNote && <div style={{margin:"12px 6px 4px",background:`linear-gradient(135deg, ${rgb(scl(moodRGB(yearNote.mood),.86))}, #FFFFFF)`,border:`1px solid ${LINE}`,borderRadius:14,padding:"14px 16px"}}>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
               <div style={{display:"flex",alignItems:"center",gap:10}}><Glyph mood={yearNote.mood} size={34}/>
