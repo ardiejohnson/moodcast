@@ -617,7 +617,7 @@ function MoodMap({ moods, busy, onPick, focusCode, focusKey }){
     const ent=moods[c.id]; setHover({ id:c.id, name:c.name, mood:ent?ent.mood:null, x:e.clientX-r.left, y:e.clientY-r.top, w:r.width }); };
   useEffect(()=>{
     const svg=select(svgRef.current), g=select(gRef.current);
-    const z=d3zoom().scaleExtent([1,9]).translateExtent([[0,0],[MAP_W,MAP_H]])
+    const z=d3zoom().scaleExtent([1,9]).extent([[0,0],[MAP_W,MAP_H]]).translateExtent([[0,0],[MAP_W,MAP_H]])
       .filter((e)=>{ if(e.type==="wheel") return true; if(e.type.startsWith("touch")) return true; return !e.button; }) // one-finger pan on touch
       .on("zoom",(e)=>{ g.attr("transform",e.transform.toString()); setZoomed(e.transform.k>1.05); });
     svg.call(z).on("dblclick.zoom",null);
@@ -1144,7 +1144,7 @@ export default function MoodCast(){
         .ms .busy-card{position:relative;}
         .ms .busy-card::after{content:"";position:absolute;inset:0;border-radius:18px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.45),transparent);background-size:200% 100%;animation:ms-shimmer 1.3s linear infinite;pointer-events:none;}
         .ms .mm-svg{height:auto;}
-        @media (max-width:640px){ .ms .mm-wrap{height:72vh;max-height:640px;} .ms .mm-wrap .mm-svg{height:100%;} }
+        @media (max-width:640px){ .ms .mm-wrap{aspect-ratio:1/1;} .ms .mm-wrap .mm-svg{height:100%;} }
         @keyframes ms-blink{0%,80%,100%{opacity:.18;}40%{opacity:1;}}
         .ms .dots b{animation:ms-blink 1.2s infinite;font-weight:900;}
         .ms .dots b:nth-child(2){animation-delay:.2s;} .ms .dots b:nth-child(3){animation-delay:.4s;}
