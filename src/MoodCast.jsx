@@ -223,6 +223,19 @@ function translateUrl(url){
     return `https://${host}.translate.goog${u.pathname||"/"}${u.search?u.search+"&":"?"}_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en`;
   }catch{ return url; }
 }
+// Ask the model for an annual public-mood history of a country (AI estimate,
+// cached). Mirrors the U.S. reconstruction but generated on demand per country.
+async function fetchCountrySeries(label, fromYear, toYear){
+  const sys=`You are a concise country analyst. Estimate a nation's public MOOD each year on a 0–100 scale (0=bleak/stormy, 50=neutral, 100=hopeful/radiant), grounded in its documented history — economy, conflict, politics, disasters, milestones. Respond ONLY valid JSON, no markdown: {"series":[{"year":<int>,"mood":<int 0-100>,"event":"<<=6 word note, or empty>"}]}. Give exactly one entry per year from ${fromYear} to ${toYear}. Add an "event" only on genuinely notable years.`;
+  try{ const txt=await callModel(sys,`Country: ${label}. Annual public mood ${fromYear}–${toYear}.`);
+    const p=parseJson(txt); const arr=(p&&Array.isArray(p.series))?p.series:[];
+    const pts=arr.map(s=>{ const y=parseInt(s.year,10); const m=Math.round(Number(s.mood));
+      if(!Number.isFinite(y)||!Number.isFinite(m))return null;
+      return { t:Date.UTC(y,6,1), overall:Math.max(0,Math.min(100,m)), ev:(s.event&&String(s.event).trim())||undefined, est:true };
+    }).filter(Boolean).sort((a,b)=>a.t-b.t);
+    return pts;
+  }catch{ return []; }
+}
 // Ask the model for a country's top native news websites (cached per country).
 async function fetchCountrySites(label){
   const sys=`You list real, currently-operating top news websites for a country. Respond ONLY valid JSON, no markdown: {"sites":[{"name":"<outlet name>","url":"<homepage https url>","lang":"<primary language in English, e.g. Khmer>"}]}. Give the 5 most prominent general-news outlets actually based in the country. Real homepages only.`;
@@ -635,6 +648,9 @@ export default function MoodCast(){
   const [reduced,setReduced]=useState(false);
   const [range,setRange]=useState("5Y");
   const [yearNote,setYearNote]=useState(null); // { t, label, mood, ev, live, text, loading }
+  const [chartCountry,setChartCountry]=useState(null); // { code, label } | null — scopes the trend chart
+  const [countrySeries,setCountrySeries]=useState({}); // { code: [points] }
+  const [csBusy,setCsBusy]=useState([]); // codes whose history is generating
   // settings + view prefs
   const [perCat,setPerCat]=useState(3);
   const [includeFollows,setIncludeFollows]=useState(true);
@@ -804,7 +820,17 @@ export default function MoodCast(){
     if(sites.length){ setWorldSites(s=>({...s,[code]:sites})); store.set("ms:sites:"+code,sites); }
     setSitesBusy(b=>b.filter(x=>x!==code));
   },[worldSites,sitesBusy]);
+  const ensureCountrySeries=useCallback(async(code,label)=>{
+    if(countrySeries[code]||csBusy.includes(code))return;
+    const cached=await store.get("ms:cseries:"+code); if(cached&&cached.length){ setCountrySeries(s=>({...s,[code]:cached})); return; }
+    setCsBusy(b=>[...b,code]);
+    const pts=await fetchCountrySeries(label,1970,new Date().getFullYear());
+    if(pts.length){ setCountrySeries(s=>({...s,[code]:pts})); store.set("ms:cseries:"+code,pts); }
+    else setCountrySeries(s=>({...s,[code]:[]})); // mark done so the spinner clears even on failure
+    setCsBusy(b=>b.filter(x=>x!==code));
+  },[countrySeries,csBusy]);
   const onPickCountry=useCallback(async(code,label)=>{
+    setChartCountry({code,label}); ensureCountrySeries(code,label);
     ensureCountrySites(code,label);
     const ex=worldMoods[code];
     if(ex){ setWorldSel({code,label,mood:ex.mood,items:ex.items,loading:false}); return; }
@@ -812,7 +838,7 @@ export default function MoodCast(){
     setWorldSel({code,label,loading:true});
     const entry=await gradeCountry(code,label);
     setWorldSel(s=>s&&s.code===code?(entry?{code,label,mood:entry.mood,items:entry.items,loading:false}:{code,label,error:true,loading:false}):s);
-  },[worldMoods,worldBusy,gradeCountry,ensureCountrySites]);
+  },[worldMoods,worldBusy,gradeCountry,ensureCountrySites,ensureCountrySeries]);
   const loadMoreCountry=async()=>{ if(!worldSel||worldSel.loading)return; const code=worldSel.code; const key="country:"+code; if(moreBusy.includes(key))return;
     const cur=worldMoods[code]; const n=Math.min(MORE_CAP,(cur?.n||Math.min(4,perCat))+3);
     setMoreBusy(b=>[...b,key]);
@@ -931,9 +957,15 @@ export default function MoodCast(){
   const summaryText = `MoodCast — ${today}\nPublic mood: ${overall??"—"}/100 (${moodWord(overall)})${delta!=null?` ${delta>0?"▲ up "+delta:delta<0?"▼ down "+Math.abs(delta):"steady"} since last`:""}\n${brightest?`Brightest: ${brightest.c.label} (${brightest.m})`:""} · ${heaviest?`Heaviest: ${heaviest.c.label} (${heaviest.m})`:""}`;
   const copy=async()=>{ try{await navigator.clipboard.writeText(summaryText);setCopied(true);setTimeout(()=>setCopied(false),1800);}catch{setCopied(false);} };
   const heroTop=rgb(scl(moodRGB(overall??50),0.5)), heroMid=moodColor(overall??50);
-  // Full series: 250-year estimated backdrop + this device's real readings, filtered to the range.
-  const fullHistory=[...LONG_HISTORY, ...history.map(h=>({t:h.t,overall:h.overall,live:true}))].sort((a,b)=>a.t-b.t);
-  const firstLiveT=history.length?Math.min(...history.map(h=>h.t)):null;
+  // Trend chart scope: the whole world's U.S.-anchored backdrop, or — when a
+  // country is selected on the Mood Map — that country's AI-estimated history.
+  const cScope=chartCountry;
+  const cSeriesLoading=cScope&&countrySeries[cScope.code]===undefined; // undefined = still generating; [] = done/empty
+  const cLiveT=cScope?(worldMoods[cScope.code]?.t??null):(history.length?Math.min(...history.map(h=>h.t)):null);
+  const fullHistory=cScope
+    ? [ ...(countrySeries[cScope.code]||[]), ...(worldMoods[cScope.code]?[{t:worldMoods[cScope.code].t,overall:worldMoods[cScope.code].mood,live:true}]:[]) ].sort((a,b)=>a.t-b.t)
+    : [...LONG_HISTORY, ...history.map(h=>({t:h.t,overall:h.overall,live:true}))].sort((a,b)=>a.t-b.t);
+  const firstLiveT=cLiveT;
   const rangeMs=RANGES.find(r=>r[0]===range)?.[1] ?? null;
   const cutoff=rangeMs?Date.now()-rangeMs:-Infinity;
   const chartData=fullHistory.filter(p=>p.t>=cutoff);
@@ -956,12 +988,13 @@ export default function MoodCast(){
     const label=pointLabel(p);
     setYearNote({ t:p.t, label, mood:p.overall, ev:p.ev, live:p.live, text:null, loading:!p.live });
     if(p.live){ setYearNote(n=>n&&n.t===p.t?{...n,text:`A real reading taken on ${label} — the news mood read ${p.overall}/100 (${moodWord(p.overall)}).`,loading:false}:n); return; }
-    const key="ms:why:"+p.t;
+    const place=cScope?cScope.label:"the United States";
+    const key="ms:why:"+(cScope?cScope.code+":":"")+p.t;
     const cached=await store.get(key);
     if(cached){ setYearNote(n=>n&&n.t===p.t?{...n,text:cached,loading:false}:n); return; }
     try{
-      const sys="You are a concise, accurate U.S. social historian writing for a 'public mood' app. In 3–5 sentences, explain the mood and national sentiment of the United States at the given time and WHY — the specific events, economy, wars, or cultural currents that shaped how optimistic or pessimistic people felt. Be factual and specific; name real events. No preamble, no caveats about data.";
-      const user=`Time: ${label}. Estimated U.S. public mood: ${p.overall}/100 (0=stormy/bleak, 50=neutral, 100=radiant/hopeful)${p.ev?`. Key marker: ${p.ev}`:""}. Explain why the national mood was around this level then.`;
+      const sys=`You are a concise, accurate social historian writing for a 'public mood' app. In 3–5 sentences, explain the mood and national sentiment of ${place} at the given time and WHY — the specific events, economy, conflict, politics, or cultural currents that shaped how optimistic or pessimistic people felt. Be factual and specific; name real events. No preamble, no caveats about data.`;
+      const user=`Country: ${place}. Time: ${label}. Estimated public mood: ${p.overall}/100 (0=stormy/bleak, 50=neutral, 100=radiant/hopeful)${p.ev?`. Key marker: ${p.ev}`:""}. Explain why the mood was around this level then.`;
       const txt=await callModel(sys,user);
       if(txt){ store.set(key,txt); setYearNote(n=>n&&n.t===p.t?{...n,text:txt,loading:false}:n); }
       else setYearNote(n=>n&&n.t===p.t?{...n,text:"Couldn't load an explanation right now — try again.",loading:false}:n);
@@ -1295,14 +1328,20 @@ export default function MoodCast(){
         {/* OVERALL TREND */}
         <section style={{marginTop:24,background:CARD,border:`1px solid ${LINE}`,borderRadius:18,padding:"16px 14px 8px",boxShadow:"0 2px 10px rgba(27,35,48,.04)"}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8,paddingLeft:6,marginBottom:10}}>
-            <div style={{fontFamily:F.display,fontWeight:700,fontSize:17}}>Public mood over time</div>
+            <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+              <div style={{fontFamily:F.display,fontWeight:700,fontSize:17}}>Public mood over time</div>
+              {cScope
+                ? <span style={{display:"inline-flex",alignItems:"center",gap:6,background:"#EEF4FF",border:`1px solid #D6E4FB`,borderRadius:999,padding:"3px 6px 3px 11px",fontSize:12.5,fontWeight:700,color:INK}}>{cScope.label}<button onClick={()=>setChartCountry(null)} title="Back to U.S." style={{background:"transparent",border:"none",color:INK2,fontSize:14,cursor:"pointer",lineHeight:1,padding:"0 2px"}}>×</button></span>
+                : <span style={{fontSize:12.5,color:INK2,fontWeight:600}}>· United States</span>}
+            </div>
             <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
               {RANGES.map(([lbl])=>(
                 <button key={lbl} onClick={()=>setRange(lbl)} style={{background:range===lbl?ACCENT:CARD,color:range===lbl?"#fff":INK2,border:`1px solid ${range===lbl?ACCENT:LINE}`,borderRadius:8,padding:"4px 8px",fontSize:11.5,fontWeight:700,cursor:"pointer"}}>{lbl}</button>
               ))}
             </div>
           </div>
-          {chartData.length<2 ? <div style={{padding:"34px 12px",textAlign:"center",color:INK2,fontSize:13}}>Not enough data in this range yet. Take a few readings, or pick a longer span to see the historical arc.</div>
+          {cSeriesLoading ? <div style={{padding:"40px 12px",textAlign:"center",color:INK,fontSize:13.5,fontWeight:600,display:"flex",alignItems:"center",justifyContent:"center",gap:10}}><Spinner size={18} color={ACCENT}/>Building {cScope.label}’s mood history<Dots/></div>
+          : chartData.length<2 ? <div style={{padding:"34px 12px",textAlign:"center",color:INK2,fontSize:13}}>{cScope?`No history for ${cScope.label} in this range yet.`:"Not enough data in this range yet. Take a few readings, or pick a longer span to see the historical arc."}</div>
           : <ResponsiveContainer width="100%" height={230}>
               <LineChart data={chartData} margin={{top:6,right:14,bottom:4,left:-20}} onClick={onChartClick} style={{cursor:"pointer"}}>
                 <defs><linearGradient id="mg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#F4A93B"/><stop offset="100%" stopColor="#46577A"/></linearGradient></defs>
@@ -1325,7 +1364,9 @@ export default function MoodCast(){
             {yearNote.ev && <div style={{fontSize:12.5,fontWeight:700,color:INK,marginTop:10}}>{yearNote.ev}</div>}
             <div style={{fontSize:13.5,color:INK,marginTop:8,lineHeight:1.5}}>{yearNote.loading?<span style={{display:"inline-flex",alignItems:"center",gap:8,color:INK2}}><Spinner size={15}/>Looking back at {yearNote.label}…</span>:yearNote.text}</div>
           </div>}
-          <div style={{fontSize:11,color:"#9AA3AE",padding:"6px 6px 0",lineHeight:1.5}}>The shaded stretch is a <b style={{fontWeight:700}}>historical estimate</b> of U.S. public mood, not a measurement — reconstructed from documented conditions, and from 1952 the U. Michigan Consumer Sentiment Index and (from 1979) Gallup. <b style={{fontWeight:700}}>Tap any point</b> on the line to learn why. Your live readings add real data from today.</div>
+          <div style={{fontSize:11,color:"#9AA3AE",padding:"6px 6px 0",lineHeight:1.5}}>{cScope
+            ? <>An <b style={{fontWeight:700}}>AI estimate</b> of {cScope.label}’s public mood since 1970, reconstructed from its documented history — not a measurement. <b style={{fontWeight:700}}>Tap any point</b> on the line to learn what was happening. Select a country on the Mood Map to switch, or × to return to the U.S.</>
+            : <>The shaded stretch is a <b style={{fontWeight:700}}>historical estimate</b> of U.S. public mood, not a measurement — reconstructed from documented conditions, and from 1952 the U. Michigan Consumer Sentiment Index and (from 1979) Gallup. <b style={{fontWeight:700}}>Tap any point</b> on the line to learn why. Pick a country on the Mood Map to see its history. Your live readings add real data from today.</>}</div>
         </section>
 
         <div style={{marginTop:16,fontSize:11,color:"#9AA3AE",textAlign:"center",maxWidth:560,marginLeft:"auto",marginRight:"auto",lineHeight:1.5}}>A playful read on the mood of the news, not a precise measurement. Scores are AI estimates of recent headlines, searched live.</div>
