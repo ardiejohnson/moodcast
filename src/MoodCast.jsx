@@ -1084,7 +1084,16 @@ export default function MoodCast(){
   const onChartClick=async(e)=>{
     // Recharts gives activePayload on click; fall back to activeLabel→nearest point.
     let p=e&&e.activePayload&&e.activePayload[0]&&e.activePayload[0].payload;
-    if(!p && e && e.activeLabel!=null) p=chartData.reduce((best,d)=>(best&&Math.abs(best.t-e.activeLabel)<=Math.abs(d.t-e.activeLabel))?best:d, null);
+    const tapT=(e&&e.activeLabel!=null)?e.activeLabel:(p?p.t:null);
+    if(!p && tapT!=null) p=chartData.reduce((best,d)=>(best&&Math.abs(best.t-tapT)<=Math.abs(d.t-tapT))?best:d, null);
+    // Snap to the nearest existing dot when the tap lands within a range-scaled
+    // window — so on mobile you reliably hit a marker instead of the next year.
+    if(tapT!=null && chartDots.length){
+      const span=rangeMs!=null?rangeMs:(chartData.length?(chartData[chartData.length-1].t-chartData[0].t):0);
+      const snapWin=Math.max(YEAR_MS*0.5, span*0.09); // ~9% of the visible span, min 6 months
+      let best=null,bd=Infinity; for(const dd of chartDots){ const dist=Math.abs(dd.t-tapT); if(dist<bd){bd=dist;best=dd;} }
+      if(best && bd<=snapWin){ const dp=chartData.find(x=>x.t===best.t); if(dp)p=dp; }
+    }
     if(!p)return;
     const label=pointLabel(p);
     const scope=scopedCountry?scopedCountry.code:"us";
