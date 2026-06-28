@@ -592,21 +592,32 @@ function CommentsModal({ id, label, onClose, onCount }){
   );
 }
 
-// In-app article reader: opens instead of navigating away. Shows the headline,
-// summary, an AI digest (model reads the article via web search), reactions and
-// comments, with the original kept as a secondary "Open original" link.
+// In-app article reader: opens instead of navigating away. Tries a server-side
+// reader-mode extraction of the real article (shared-cached); falls back to an
+// AI digest (also shared) when the site blocks fetching. Original kept as a link.
 function ArticleModal({ it, onClose, voteData, voteMine, onVote, count, onComment }){
-  const [digest,setDigest]=useState({loading:true,text:""});
+  const [content,setContent]=useState({loading:true});
   useEffect(()=>{ let live=true; (async()=>{
-    const key="ms:digest:"+artId(it);
-    const cached=await store.get(key); if(cached){ if(live)setDigest({loading:false,text:cached}); return; }
-    try{ const sys="You are a news reader. Read the article and give a clear, neutral digest of what it actually reports — the key facts and why it matters — in about 120 words. Use web search to read the real article. Plain prose, no preamble, no markdown, no citations.";
+    const aid=artId(it);
+    try{
+      // 1) reader text from the shared cache, or fetched & extracted server-side.
+      const r=await fetch(`/api/reader?id=${encodeURIComponent(aid)}&url=${encodeURIComponent(it.url||"")}`,{cache:"no-store"});
+      const d=await r.json().catch(()=>({}));
+      if(!live)return;
+      if(d.reader){ setContent({loading:false,mode:"reader",text:d.reader}); return; }
+      if(d.digest){ setContent({loading:false,mode:"digest",text:d.digest}); return; }
+      // 2) generate an AI digest, then save it to the shared cache.
+      const sys="You are a news reader. Read the article and give a clear, neutral digest of what it actually reports — the key facts and why it matters — in about 130 words. Use web search to read the real article. Plain prose, no preamble, no markdown, no citations.";
       const user=`Headline: ${it.title}\nSource: ${it.source||""}\nURL: ${it.url||""}\nKnown one-line summary: ${it.summary||""}\nWrite the digest.`;
       const txt=stripCites((await callModel(sys,user,500))||"");
-      if(live){ setDigest({loading:false,text:txt}); if(txt)store.set(key,txt); }
-    }catch{ if(live)setDigest({loading:false,text:""}); }
+      if(!live)return;
+      if(txt){ setContent({loading:false,mode:"digest",text:txt});
+        fetch("/api/reader",{method:"POST",headers:{"Content-Type":"application/json","x-moodcast-pass":PASSCODE},body:JSON.stringify({id:aid,digest:txt})}).catch(()=>{}); }
+      else setContent({loading:false,mode:"none"});
+    }catch{ if(live)setContent({loading:false,mode:"none"}); }
   })(); return ()=>{live=false;}; },[it]);
   const m=toMood(it.score);
+  const paras=content.mode==="reader"?content.text.split(/\n\n+/).filter(Boolean):null;
   return (
     <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(20,26,36,.5)",backdropFilter:"blur(3px)",display:"flex",alignItems:"center",justifyContent:"center",padding:16,zIndex:85}}>
       <div onClick={e=>e.stopPropagation()} style={{width:"min(620px,100%)",maxHeight:"88vh",overflowY:"auto",background:PAPER,borderRadius:20,boxShadow:"0 24px 60px rgba(0,0,0,.35)"}}>
@@ -618,10 +629,11 @@ function ArticleModal({ it, onClose, voteData, voteMine, onVote, count, onCommen
         </div>
         <div style={{padding:"16px 20px 20px"}}>
           {it.summary && <div style={{fontSize:14.5,color:INK,lineHeight:1.5,fontWeight:500}}>{it.summary}</div>}
-          <div style={{fontSize:11,fontWeight:800,letterSpacing:".08em",color:INK2,textTransform:"uppercase",margin:"14px 0 6px"}}>In depth</div>
-          {digest.loading ? <div style={{display:"flex",alignItems:"center",gap:10,color:INK2,fontSize:13.5,padding:"4px 0"}}><Spinner size={16} color={ACCENT}/>Reading the article<Dots/></div>
-           : digest.text ? <div style={{fontSize:14,color:INK,lineHeight:1.55}}>{digest.text}</div>
-           : <div style={{fontSize:13.5,color:INK2}}>Couldn’t pull a digest for this one — try the original article below.</div>}
+          <div style={{fontSize:11,fontWeight:800,letterSpacing:".08em",color:INK2,textTransform:"uppercase",margin:"14px 0 6px"}}>{content.mode==="reader"?"The article":content.mode==="digest"?"In depth · AI summary":"In depth"}</div>
+          {content.loading ? <div style={{display:"flex",alignItems:"center",gap:10,color:INK2,fontSize:13.5,padding:"4px 0"}}><Spinner size={16} color={ACCENT}/>Reading the article<Dots/></div>
+           : content.mode==="reader" ? <div style={{display:"grid",gap:10}}>{paras.map((p,i)=><div key={i} style={{fontSize:14.5,color:INK,lineHeight:1.6}}>{p}</div>)}</div>
+           : content.mode==="digest" ? <div style={{fontSize:14,color:INK,lineHeight:1.55}}>{content.text}</div>
+           : <div style={{fontSize:13.5,color:INK2}}>Couldn’t pull this one in — open the original below.</div>}
           <div style={{display:"flex",alignItems:"center",gap:12,marginTop:16,flexWrap:"wrap"}}>
             <ArticleReact data={voteData} mine={voteMine} onVote={onVote}/>
             <button onClick={onComment} style={{display:"inline-flex",alignItems:"center",gap:5,background:"transparent",border:"none",padding:0,cursor:"pointer",color:count?INK:INK2,fontSize:13,fontWeight:700}}>💬 {count||"Comment"}</button>

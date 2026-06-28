@@ -241,6 +241,29 @@ function mockApiPlugin() {
         next()
       })
 
+      // In-memory shared reader/digest cache: byId[id] = {reader,digest}
+      const readerById = {}
+      server.middlewares.use('/api/reader', async (req, res, next) => {
+        res.setHeader('content-type', 'application/json')
+        const url = new URL(req.url, 'http://localhost')
+        if (req.method === 'GET') {
+          const id = url.searchParams.get('id') || ''
+          const e = readerById[id] || {}
+          // Local mock can't fetch real sites; return digest cache only (forces the AI-digest path).
+          res.end(JSON.stringify({ reader: e.reader || null, digest: e.digest || null, mocked: true }))
+          return
+        }
+        if (req.method === 'POST') {
+          const b = await readBody(req)
+          if (!b.id || !b.digest) { res.statusCode = 400; res.end('{"error":"bad"}'); return }
+          readerById[b.id] = readerById[b.id] || {}
+          if (!readerById[b.id].digest) readerById[b.id].digest = String(b.digest).slice(0, 2000)
+          res.end('{"ok":true,"mocked":true}')
+          return
+        }
+        next()
+      })
+
       // In-memory shared asks feed: newest-first list of {q,answer,mood,t}
       const asks = []
       server.middlewares.use('/api/asks', async (req, res, next) => {
