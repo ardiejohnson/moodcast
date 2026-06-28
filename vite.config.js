@@ -71,12 +71,12 @@ function mockApiPlugin() {
           const system = String(body.system || '')
           const user = String(body.user || '')
           let text
-          if (system.includes('"series"')) {
+          if (system.includes('"moods"')) {
             const m = user.match(/(\d{4})[–-](\d{4})/)
             const from = m ? +m[1] : 1970, to = m ? +m[2] : 2026
-            const series = []
-            for (let y = from; y <= to; y++) series.push({ year: y, mood: 45 + Math.round(15 * Math.sin((y - from) / 5)), event: (y % 12 === 0) ? '[mock] notable year' : '' })
-            text = JSON.stringify({ series })
+            const moods = [], events = {}
+            for (let y = from; y <= to; y++) { moods.push(45 + Math.round(15 * Math.sin((y - from) / 5))); if (y % 12 === 0) events[String(y)] = '[mock] notable year' }
+            text = JSON.stringify({ from, moods, events })
           } else if (system.includes('"sites"')) {
             const country = (user.match(/Country:\s*(.+?)\./)?.[1] || 'Country').trim()
             text = JSON.stringify({ sites: [
