@@ -1578,8 +1578,8 @@ export default function MoodCast(){
               <LineChart data={chartData} margin={{top:6,right:14,bottom:4,left:-20}} onClick={onChartClick}>
                 <defs><linearGradient id="mg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#F4A93B"/><stop offset="100%" stopColor="#46577A"/></linearGradient></defs>
                 <CartesianGrid stroke={LINE} vertical={false}/>
-                <XAxis dataKey="t" type="number" domain={[dom.start,dom.end]} allowDataOverflow tickFormatter={axisFmt} stroke={LINE} tickLine={false} minTickGap={44}/>
-                <YAxis domain={[0,100]} ticks={[0,25,50,75,100]} stroke={LINE} tickLine={false}/>
+                <XAxis dataKey="t" type="number" domain={[dom.start,dom.end]} allowDataOverflow tickFormatter={axisFmt} stroke={LINE} tickLine={false} minTickGap={44} tick={{fill:INK2,fontSize:12,fontWeight:600}}/>
+                <YAxis domain={[0,100]} ticks={[0,25,50,75,100]} stroke={LINE} tickLine={false} tick={{fill:INK2,fontSize:12,fontWeight:600}}/>
                 {seedEnd>seedStart && <ReferenceArea x1={seedStart} x2={seedEnd} fill={INK} fillOpacity={0.05} ifOverflow="hidden" label={{value:"estimated",position:"insideTopLeft",fontSize:10,fill:INK2}}/>}
                 <ReferenceLine y={50} stroke={INK2} strokeDasharray="3 3"/>
                 <Tooltip content={(props)=><MoodTip {...props} labelFmt={labelFmt}/>}/>
