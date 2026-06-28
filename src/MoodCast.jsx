@@ -550,7 +550,7 @@ function CommentsModal({ id, label, onClose, onCount }){
   const report=async(cid)=>{ try{ await moderateComment(id,cid,"report"); }catch{}
     setList(prev=>(prev||[]).map(c=>c.cid===cid?{...c,reported:true}:c)); };
   return (
-    <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(20,26,36,.5)",backdropFilter:"blur(3px)",display:"flex",alignItems:"flex-end",justifyContent:"center",padding:"0 0",zIndex:75}}>
+    <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(20,26,36,.5)",backdropFilter:"blur(3px)",display:"flex",alignItems:"flex-end",justifyContent:"center",padding:"0 0",zIndex:95}}>
       <div onClick={e=>e.stopPropagation()} style={{width:"min(520px,100%)",maxHeight:"82vh",display:"flex",flexDirection:"column",background:PAPER,borderRadius:"20px 20px 0 0",boxShadow:"0 -16px 50px rgba(0,0,0,.3)"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"16px 18px",borderBottom:`1px solid ${LINE}`}}>
           <div><div style={{fontFamily:F.display,fontWeight:800,fontSize:17}}>Today’s chatter</div>
@@ -585,6 +585,50 @@ function CommentsModal({ id, label, onClose, onCount }){
             <input value={text} onChange={e=>setText(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")submit();}} placeholder="Add to today’s chatter…" maxLength={280}
               style={{flex:1,border:`1px solid ${LINE}`,borderRadius:10,padding:"10px 12px",fontSize:14,background:CARD,fontFamily:"inherit"}}/>
             <button onClick={submit} disabled={busy||!text.trim()} style={{background:ACCENT,color:"#fff",borderRadius:10,padding:"0 18px",fontSize:14,fontWeight:700,display:"flex",alignItems:"center",opacity:(busy||!text.trim())?.5:1,cursor:(busy||!text.trim())?"not-allowed":"pointer"}}>{busy?<Spinner size={15} color="#fff"/>:"Post"}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// In-app article reader: opens instead of navigating away. Shows the headline,
+// summary, an AI digest (model reads the article via web search), reactions and
+// comments, with the original kept as a secondary "Open original" link.
+function ArticleModal({ it, onClose, voteData, voteMine, onVote, count, onComment }){
+  const [digest,setDigest]=useState({loading:true,text:""});
+  useEffect(()=>{ let live=true; (async()=>{
+    const key="ms:digest:"+artId(it);
+    const cached=await store.get(key); if(cached){ if(live)setDigest({loading:false,text:cached}); return; }
+    try{ const sys="You are a news reader. Read the article and give a clear, neutral digest of what it actually reports — the key facts and why it matters — in about 120 words. Use web search to read the real article. Plain prose, no preamble, no markdown, no citations.";
+      const user=`Headline: ${it.title}\nSource: ${it.source||""}\nURL: ${it.url||""}\nKnown one-line summary: ${it.summary||""}\nWrite the digest.`;
+      const txt=stripCites((await callModel(sys,user,500))||"");
+      if(live){ setDigest({loading:false,text:txt}); if(txt)store.set(key,txt); }
+    }catch{ if(live)setDigest({loading:false,text:""}); }
+  })(); return ()=>{live=false;}; },[it]);
+  const m=toMood(it.score);
+  return (
+    <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(20,26,36,.5)",backdropFilter:"blur(3px)",display:"flex",alignItems:"center",justifyContent:"center",padding:16,zIndex:85}}>
+      <div onClick={e=>e.stopPropagation()} style={{width:"min(620px,100%)",maxHeight:"88vh",overflowY:"auto",background:PAPER,borderRadius:20,boxShadow:"0 24px 60px rgba(0,0,0,.35)"}}>
+        <div style={{background:`linear-gradient(135deg, ${rgb(scl(moodRGB(m),.55))}, ${moodColor(m)})`,color:"#fff",padding:"18px 20px",display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12}}>
+          <div style={{display:"flex",alignItems:"flex-start",gap:12,minWidth:0}}><Glyph mood={m} size={40}/>
+            <div style={{minWidth:0}}><div style={{fontFamily:F.display,fontWeight:800,fontSize:18,lineHeight:1.25}}>{it.title}</div>
+              <div style={{fontSize:12.5,fontWeight:600,opacity:.95,marginTop:3}}>{it.source||"—"} · {moodWord(m)} · {m}/100</div></div></div>
+          <button onClick={onClose} style={{...glassBtn,padding:"6px 12px",fontSize:13,flexShrink:0}}>Close</button>
+        </div>
+        <div style={{padding:"16px 20px 20px"}}>
+          {it.summary && <div style={{fontSize:14.5,color:INK,lineHeight:1.5,fontWeight:500}}>{it.summary}</div>}
+          <div style={{fontSize:11,fontWeight:800,letterSpacing:".08em",color:INK2,textTransform:"uppercase",margin:"14px 0 6px"}}>In depth</div>
+          {digest.loading ? <div style={{display:"flex",alignItems:"center",gap:10,color:INK2,fontSize:13.5,padding:"4px 0"}}><Spinner size={16} color={ACCENT}/>Reading the article<Dots/></div>
+           : digest.text ? <div style={{fontSize:14,color:INK,lineHeight:1.55}}>{digest.text}</div>
+           : <div style={{fontSize:13.5,color:INK2}}>Couldn’t pull a digest for this one — try the original article below.</div>}
+          <div style={{display:"flex",alignItems:"center",gap:12,marginTop:16,flexWrap:"wrap"}}>
+            <ArticleReact data={voteData} mine={voteMine} onVote={onVote}/>
+            <button onClick={onComment} style={{display:"inline-flex",alignItems:"center",gap:5,background:"transparent",border:"none",padding:0,cursor:"pointer",color:count?INK:INK2,fontSize:13,fontWeight:700}}>💬 {count||"Comment"}</button>
+          </div>
+          <div style={{borderTop:`1px solid ${LINE}`,marginTop:16,paddingTop:14,display:"flex",gap:10,flexWrap:"wrap"}}>
+            {it.url && <a href={it.url} target="_blank" rel="noreferrer" style={{display:"inline-flex",alignItems:"center",gap:6,background:CARD,border:`1px solid ${LINE}`,borderRadius:10,padding:"8px 14px",fontSize:13,fontWeight:700,color:INK,textDecoration:"none"}}>Open original ↗</a>}
+            <button onClick={onClose} style={{background:ACCENT,color:"#fff",border:"none",borderRadius:10,padding:"8px 16px",fontSize:13,fontWeight:700,cursor:"pointer"}}>Done</button>
           </div>
         </div>
       </div>
@@ -683,6 +727,7 @@ export default function MoodCast(){
   const [commentCounts,setCommentCounts]=useState({}); // { id: n }
   const [commentsFor,setCommentsFor]=useState(null);   // { id, label } | null
   const [articlesModal,setArticlesModal]=useState(null); // { label, mood, items } | null
+  const [articleOpen,setArticleOpen]=useState(null); // an article item opened in the reader modal
   const [moreBusy,setMoreBusy]=useState([]); // context keys currently loading more articles
   const [topArts,setTopArts]=useState({sunny:null,cloudy:null}); // crowd's picks
   const [worldMoods,setWorldMoods]=useState({}); // { code: {mood,items,t,label} }
@@ -1249,7 +1294,7 @@ export default function MoodCast(){
                 <div style={{flexShrink:0}}><Glyph mood={sunny.mood} size={52}/></div>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:11,fontWeight:800,letterSpacing:"0.1em",color:"#B5860B",textTransform:"uppercase",marginBottom:6}}>Brightest story today</div>
-                  <div style={{fontFamily:F.display,fontWeight:700,fontSize:18,lineHeight:1.25}}>{sunny.item.url?<a href={sunny.item.url} target="_blank" rel="noreferrer">{sunny.item.title}</a>:sunny.item.title}</div>
+                  <button onClick={()=>setArticleOpen(sunny.item)} style={{textAlign:"left",background:"transparent",border:"none",padding:0,cursor:"pointer",fontFamily:F.display,fontWeight:700,fontSize:18,lineHeight:1.25,color:INK,textDecoration:"underline",textDecorationColor:"rgba(27,35,48,.25)"}}>{sunny.item.title}</button>
                   {sunny.item.summary&&<div style={{fontSize:13.5,color:INK2,marginTop:6,lineHeight:1.45}}>{sunny.item.summary}</div>}
                   <div style={{fontSize:12,color:"#9AA3AE",marginTop:8,fontWeight:600}}>{sunny.item.source||""}{sunny.t?` · ${ago(sunny.t)}`:""}</div>
                   <div style={{display:"flex",alignItems:"center",gap:10,marginTop:8,flexWrap:"wrap"}}>
@@ -1277,7 +1322,7 @@ export default function MoodCast(){
                 <div style={{flexShrink:0}}><Glyph mood={dark.mood} size={52}/></div>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:11,fontWeight:800,letterSpacing:"0.1em",color:"#5E7196",textTransform:"uppercase",marginBottom:6}}>Heaviest story today</div>
-                  <div style={{fontFamily:F.display,fontWeight:700,fontSize:18,lineHeight:1.25}}>{dark.item.url?<a href={dark.item.url} target="_blank" rel="noreferrer">{dark.item.title}</a>:dark.item.title}</div>
+                  <button onClick={()=>setArticleOpen(dark.item)} style={{textAlign:"left",background:"transparent",border:"none",padding:0,cursor:"pointer",fontFamily:F.display,fontWeight:700,fontSize:18,lineHeight:1.25,color:INK,textDecoration:"underline",textDecorationColor:"rgba(27,35,48,.25)"}}>{dark.item.title}</button>
                   {dark.item.summary&&<div style={{fontSize:13.5,color:INK2,marginTop:6,lineHeight:1.45}}>{dark.item.summary}</div>}
                   <div style={{fontSize:12,color:"#9AA3AE",marginTop:8,fontWeight:600}}>{dark.item.source||""}{dark.t?` · ${ago(dark.t)}`:""}</div>
                   <div style={{display:"flex",alignItems:"center",gap:10,marginTop:8,flexWrap:"wrap"}}>
@@ -1672,6 +1717,12 @@ export default function MoodCast(){
       {/* TODAY'S CHATTER */}
       {commentsFor && <CommentsModal id={commentsFor.id} label={commentsFor.label} onClose={()=>setCommentsFor(null)} onCount={bumpCount}/>}
 
+      {/* ARTICLE READER */}
+      {articleOpen && (()=>{ const aid=artId(articleOpen); return (
+        <ArticleModal it={articleOpen} onClose={()=>setArticleOpen(null)}
+          voteData={votes[aid]} voteMine={myVotes[aid]} onVote={(dir)=>handleVote(aid,dir,{title:articleOpen.title,source:articleOpen.source,url:articleOpen.url})}
+          count={commentCounts[aid]} onComment={()=>setCommentsFor({id:aid,label:articleOpen.title.slice(0,60)})}/>); })()}
+
       {/* BRIGHTEST / HEAVIEST ARTICLES */}
       {articlesModal && <div onClick={()=>setArticlesModal(null)} style={{position:"fixed",inset:0,background:"rgba(20,26,36,.5)",backdropFilter:"blur(3px)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,zIndex:75}}>
         <div onClick={e=>e.stopPropagation()} style={{width:"min(560px,100%)",maxHeight:"82vh",overflowY:"auto",background:PAPER,borderRadius:20,boxShadow:"0 24px 60px rgba(0,0,0,.35)"}}>
@@ -1711,7 +1762,7 @@ export default function MoodCast(){
   function Headline({ it, small }){
     const aid=artId(it);
     return (<li style={{borderTop:`1px solid ${LINE}`,paddingTop:8,display:"flex",justifyContent:"space-between",gap:10}}>
-      <div style={{minWidth:0}}><div style={{fontSize:small?12.5:13.5,lineHeight:1.35,fontWeight:500}}>{it.url?<a href={it.url} target="_blank" rel="noreferrer">{it.title}</a>:it.title}</div>
+      <div style={{minWidth:0}}><button onClick={()=>setArticleOpen(it)} style={{textAlign:"left",background:"transparent",border:"none",padding:0,cursor:"pointer",fontSize:small?12.5:13.5,lineHeight:1.35,fontWeight:500,color:"#2657c4",textDecoration:"underline",textDecorationColor:"rgba(38,87,196,.35)"}}>{it.title}</button>
         {it.source&&<div style={{fontSize:11,color:"#9AA3AE",fontWeight:600,marginTop:3}}>{it.source}</div>}
         <div style={{display:"flex",alignItems:"center",gap:10,marginTop:7,flexWrap:"wrap"}}>
           <ArticleReact data={votes[aid]} mine={myVotes[aid]} onVote={(dir)=>handleVote(aid,dir,{title:it.title,source:it.source,url:it.url})}/>

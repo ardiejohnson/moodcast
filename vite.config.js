@@ -84,6 +84,9 @@ function mockApiPlugin() {
               { name: `${country} Times`, url: 'https://example.org', lang: 'Local' },
               { name: 'National Broadcaster', url: 'https://example.net', lang: 'English' },
             ] })
+          } else if (system.includes('news reader')) {
+            const h = user.match(/Headline:\s*(.+)/)?.[1] || 'this story'
+            text = `[MOCK digest] ${h} — this is where the real app shows an AI digest of the article (key facts and why it matters, read live via web search). Open the original for the full piece.`
           } else if (system.includes('historian')) {
             const when = user.match(/Time:\s*(.+?)\./)?.[1] || 'This period'
             text = JSON.stringify({ title: '[mock] Notable era', mood: 38, text: `${when} was shaped by the major economic and political currents of its day — booms, busts, wars, and shifting public confidence. (Local mock; the real app returns a researched paragraph.)` })
