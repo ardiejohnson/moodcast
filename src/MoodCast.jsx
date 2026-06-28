@@ -622,6 +622,12 @@ function MoodMap({ moods, busy, onPick, focusCode, focusKey }){
       .on("zoom",(e)=>{ g.attr("transform",e.transform.toString()); setZoomed(e.transform.k>1.05); });
     svg.call(z).on("dblclick.zoom",null);
     zoomRef.current=z;
+    // Default mobile framing: start zoomed in so the square fills with land
+    // instead of showing the whole world with big ocean bands.
+    if(typeof window!=="undefined" && window.innerWidth<=640){
+      const k=1.85, cx=MAP_W/2, cy=MAP_H*0.46;
+      z.transform(svg, zoomIdentity.translate(MAP_W/2-cx*k, MAP_H/2-cy*k).scale(k));
+    }
     return ()=>{ svg.on(".zoom",null); };
   },[]);
   // Zoom/pan to a specific country (used by the search box).
