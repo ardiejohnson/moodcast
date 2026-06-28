@@ -238,6 +238,22 @@ function mockApiPlugin() {
         next()
       })
 
+      // In-memory shared asks feed: newest-first list of {q,answer,mood,t}
+      const asks = []
+      server.middlewares.use('/api/asks', async (req, res, next) => {
+        res.setHeader('content-type', 'application/json')
+        if (req.method === 'GET') { res.end(JSON.stringify({ asks: asks.slice(0, 40), mocked: true })); return }
+        if (req.method === 'POST') {
+          const b = await readBody(req)
+          const q = String(b.q || '').trim().slice(0, 160), answer = String(b.answer || '').trim().slice(0, 360)
+          if (q.length < 5 || !answer) { res.statusCode = 400; res.end('{"error":"bad"}'); return }
+          if (!asks.some((a) => a.q.toLowerCase() === q.toLowerCase())) { asks.unshift({ q, answer, mood: typeof b.mood === 'number' ? b.mood : null, t: Date.now() }); asks.length = Math.min(asks.length, 40) }
+          res.end('{"ok":true,"mocked":true}')
+          return
+        }
+        next()
+      })
+
       // In-memory shared queried-point notes: notes[scope][t] = {title,text}
       const notes = {}
       server.middlewares.use('/api/note', async (req, res, next) => {

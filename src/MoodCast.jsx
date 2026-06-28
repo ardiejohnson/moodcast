@@ -235,6 +235,18 @@ async function saveWorldCountry(code,mood,items,label){
     body:JSON.stringify({ code, mood, items:(items||[]).slice(0,4), label }) });
   }catch{ /* best-effort */ }
 }
+// Shared feed of mood questions people have asked (see api/asks.js).
+async function fetchAsks(){
+  try{ const res=await fetch("/api/asks",{cache:"no-store"}); if(!res.ok)return [];
+    const d=await res.json(); return Array.isArray(d.asks)?d.asks:[];
+  }catch{ return []; }
+}
+async function saveAsk(q,answer,mood){
+  try{ await fetch("/api/asks",{ method:"POST",
+    headers:{ "Content-Type":"application/json", "x-moodcast-pass":PASSCODE },
+    body:JSON.stringify({ q, answer, ...(mood!=null?{mood}:{}) }) });
+  }catch{ /* best-effort */ }
+}
 // Wrap a URL in Google's website-translate proxy (auto → English).
 function translateUrl(url){
   try{ const u=new URL(url); const host=u.hostname.replace(/-/g,"--").replace(/\./g,"-");
@@ -670,6 +682,7 @@ export default function MoodCast(){
   const [q,setQ]=useState("");
   const [searchResult,setSearchResult]=useState(null);
   const [answer,setAnswer]=useState(null);
+  const [asks,setAsks]=useState([]); // shared feed of recent mood questions
   const [searchBusy,setSearchBusy]=useState(false);
   const [questionBusy,setQuestionBusy]=useState(false);
   const [sunny,setSunny]=useState(null);
@@ -833,7 +846,7 @@ export default function MoodCast(){
   const readAll=()=>{ readSunny(); readDark(); return read(includeFollows?[...CATEGORIES,...saved]:[...CATEGORIES],true); };
 
   // ---- Mood Map ----
-  useEffect(()=>{ fetchWorld().then(setWorldMoods); },[]);
+  useEffect(()=>{ fetchWorld().then(setWorldMoods); fetchAsks().then(setAsks); },[]);
   // Load the shared queried-point markers for the chart's current scope.
   useEffect(()=>{ const isUS=chartCountry&&(chartCountry.code==="840"||/united states/i.test(chartCountry.label));
     const scope=(chartCountry&&!isUS)?chartCountry.code:"us";
@@ -959,6 +972,8 @@ export default function MoodCast(){
   const removeRecent=(i)=>setRecent(prev=>{const nr=prev.filter((_,k)=>k!==i);store.set("ms:recent",nr);return nr;});
 
   const localSuperlative=(text)=>{ const t=text.toLowerCase();
+    // Place/world/time questions need real reasoning — don't shortcut to topics.
+    if(/(countr|nation|\bplace\b|world|global|city|cities|region|continent|where|history|year|decade|ago|happiest country|saddest)/i.test(t))return null;
     if(!/(worst|best|most|least|highest|lowest|gloom|brightest|happiest|saddest|darkest|heaviest|negative|positive)/.test(t))return null;
     if(!/(mood|forecast|sentiment|feeling|positiv|negativ|gloom|bright|topic|subject)/.test(t))return null;
     const ents=entitiesWithMood(); if(!ents.length)return null;
@@ -971,11 +986,16 @@ export default function MoodCast(){
     setSearchResult(null); setAnswer(null); setQuestionBusy(true);
     const loc=localSuperlative(text); if(loc){ setAnswer(loc); setQuestionBusy(false); return; }
     try{ const ctx=entitiesWithMood().map(e=>`${e.label} ${e.mood}`).join("; ");
-      const system=`You answer questions for a consumer "public mood weather" app. Mood is 0-100 (0 stormy/negative, 50 neutral, 100 radiant/positive). `+
-        `Current dashboard readings: ${ctx||"none yet"}. Use these to answer questions about them; you may use web search for broader questions. `+
-        `Respond ONLY JSON: {"answer":"<conversational, specific, <=55 words>","subject":"<one subject if the question resolves to a specific thing, else empty>","score":<integer -100..100 or null>}.`;
-      const txt=await callModel(system,text); const p=parseJson(txt)||{};
-      setAnswer({ answer:String(p.answer||"I couldn't find a clear answer to that.").slice(0,400), subject:(p.subject||"").trim()||null, mood:typeof p.score==="number"?toMood(p.score):null, raw:text });
+      const worldCtx=Object.values(worldMoods).filter(c=>c&&c.label).sort((a,b)=>a.mood-b.mood).slice(0,30).map(c=>`${c.label} ${c.mood}`).join("; ");
+      const system=`You are MoodCast's analyst. Mood is 0-100 (0 stormy/bleak, 50 neutral, 100 radiant). THINK IT THROUGH before answering and give a SPECIFIC, well-reasoned reply — name the actual subject/country/place and briefly say WHY, grounded in real current events. For anything beyond the dashboard (countries, the world, history, comparisons), USE WEB SEARCH and reason from real conditions. Never give a vague or generic answer, and don't just restate the dashboard topics unless the question is about them.\n`+
+        `Dashboard topic moods: ${ctx||"none yet"}.${worldCtx?` Country moods already read on the Mood Map: ${worldCtx}.`:""}\n`+
+        `Respond ONLY JSON: {"answer":"<specific, substantive, conversational, <=70 words; name the real answer and a concrete why>","subject":"<the resolved subject/country/place if any, else empty>","score":<integer -100..100 or null>}.`;
+      const txt=await callModel(system,text,700); const p=parseJson(txt)||{};
+      const ans=String(p.answer||"I couldn't find a clear answer to that.").slice(0,400);
+      const subj=(p.subject||"").trim()||null; const mood=typeof p.score==="number"?toMood(p.score):null;
+      setAnswer({ answer:ans, subject:subj, mood, raw:text });
+      // Share genuine, answered mood questions to the public feed for others.
+      if(ans&&!/couldn.t find|couldn.t reach/i.test(ans)){ saveAsk(text,ans,mood).then(()=>fetchAsks().then(setAsks)); }
     }catch{ setAnswer({answer:"Couldn't reach the data right now — try again.",raw:text}); }
     setQuestionBusy(false);
   };
@@ -1214,11 +1234,23 @@ export default function MoodCast(){
 
         {/* SEARCH / ASK */}
         <section style={{marginTop:18}}>
+          <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,letterSpacing:"0.02em",marginBottom:8,paddingLeft:2}}>Ask a Question</div>
           <div style={{display:"flex",alignItems:"center",gap:10,background:CARD,border:`1px solid ${LINE}`,borderRadius:16,padding:"10px 12px 10px 16px",boxShadow:"0 2px 10px rgba(27,35,48,.04)"}}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={INK2} strokeWidth="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
-            <input value={q} onChange={e=>setQ(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")submitSearch();}} placeholder={"Look up a subject — or ask “what has the worst mood right now?”"}/>
+            <input value={q} onChange={e=>setQ(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")submitSearch();}} placeholder={"e.g. “what country is in the worst mood right now?” — or look up any subject"}/>
             <button onClick={submitSearch} disabled={outBusy||!q.trim()} style={{...primary(outBusy||!q.trim()),minWidth:54,display:"flex",justifyContent:"center"}}>{outBusy?<Spinner size={15} color="#fff"/>:"Go"}</button>
           </div>
+          {asks.length>0 && <div style={{marginTop:12,background:CARD,border:`1px solid ${LINE}`,borderRadius:14,padding:"12px 14px",boxShadow:"0 2px 10px rgba(27,35,48,.04)"}}>
+            <div style={{fontSize:11,fontWeight:800,letterSpacing:".08em",color:INK2,textTransform:"uppercase",marginBottom:8}}>What people are asking</div>
+            <div style={{display:"grid",gap:10}}>
+              {asks.slice(0,6).map((a,i)=>(
+                <button key={i} onClick={()=>{setQ(a.q);askQuestion(a.q);window.scrollTo({top:0,behavior:"smooth"});}} style={{textAlign:"left",background:"transparent",border:"none",padding:0,cursor:"pointer",borderTop:i?`1px solid ${LINE}`:"none",paddingTop:i?10:0}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>{a.mood!=null&&<Glyph mood={a.mood} size={18}/>}<div style={{fontWeight:700,fontSize:13.5,color:INK,lineHeight:1.3}}>{a.q}</div></div>
+                  <div style={{fontSize:12.5,color:INK2,marginTop:3,lineHeight:1.4,overflow:"hidden",display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical"}}>{a.answer}</div>
+                </button>
+              ))}
+            </div>
+          </div>}
           {recent.length>0 && <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:10}}>
             {recent.map((r,i)=>{const isQ=looksLikeQuestion(r.subject);return (
               <span key={i} style={{display:"inline-flex",alignItems:"center",background:CARD,border:`1px solid ${LINE}`,borderRadius:999,paddingRight:3,maxWidth:340}}>
