@@ -237,11 +237,14 @@ async function fetchCountrySeries(label, fromYear, toYear){
   }catch{ return []; }
 }
 // Ask the model for a country's top native news websites (cached per country).
+const normalizeSiteUrl=(raw)=>{ let u=String(raw||"").trim().replace(/^["']|["']$/g,"");
+  if(!u)return ""; if(!/^https?:\/\//i.test(u)) u="https://"+u.replace(/^\/+/,"");
+  return /^https?:\/\/[^\s./]+\.[^\s/]+/.test(u)?u:""; }; // must have a dotted host
 async function fetchCountrySites(label){
-  const sys=`You list real, currently-operating top news websites for a country. Respond ONLY valid JSON, no markdown: {"sites":[{"name":"<outlet name>","url":"<homepage https url>","lang":"<primary language in English, e.g. Khmer>"}]}. Give the 5 most prominent general-news outlets actually based in the country. Real homepages only.`;
-  try{ const txt=await callModel(sys,`Country: ${label}. List its top 5 news websites.`);
+  const sys=`You list real, currently-operating news websites for a country. Respond ONLY valid JSON, no markdown: {"sites":[{"name":"<outlet name>","url":"<homepage url>","lang":"<primary language in English, e.g. Greenlandic>"}]}. List 3–6 actual news outlets based in the country — ALWAYS include the national public broadcaster and major newspapers. For small territories give whatever exists (e.g. the public broadcaster) and never return an empty list. URLs may be bare domains (e.g. knr.gl) — give the real official domain.`;
+  try{ const txt=await callModel(sys,`Country: ${label}. List its top news websites, including its public broadcaster.`);
     const p=parseJson(txt); const sites=(p&&Array.isArray(p.sites)?p.sites:[])
-      .map(s=>({ name:String(s.name||"").slice(0,60), url:(typeof s.url==="string"&&/^https?:\/\//.test(s.url))?s.url:"", lang:String(s.lang||"").slice(0,24) }))
+      .map(s=>({ name:String(s.name||"").slice(0,60), url:normalizeSiteUrl(s.url), lang:String(s.lang||"").slice(0,24) }))
       .filter(s=>s.name&&s.url).slice(0,6);
     return sites;
   }catch{ return []; }
