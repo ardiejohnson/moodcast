@@ -1297,7 +1297,7 @@ export default function MoodCast(){
 
         {/* CATEGORY GRID */}
         <div style={{marginTop:22,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
-          <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,letterSpacing:"0.02em"}}>Forecast by topic</div>
+          <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,letterSpacing:"0.02em"}}>Moodcast by topic</div>
           <button onClick={()=>setEditMode(v=>!v)} style={{background:editMode?ACCENT:CARD,color:editMode?"#fff":INK,border:`1px solid ${editMode?ACCENT:LINE}`,borderRadius:999,padding:"6px 13px",fontSize:12.5,fontWeight:700}}>{editMode?"Done":"Customize"}</button>
         </div>
         {editMode&&<div style={{marginTop:8,fontSize:12.5,color:INK2,background:"#EEF4FF",border:`1px solid #D6E4FB`,borderRadius:12,padding:"9px 13px"}}>Reorder with ↑ ↓, hide with ✕. Hidden topics still count toward the headline mood and can be restored in Settings.</div>}
@@ -1569,7 +1569,7 @@ export default function MoodCast(){
           <div style={{padding:"16px 20px 22px"}}>
             {articlesModal.items&&articlesModal.items.length
               ? <ul style={{listStyle:"none",margin:0,padding:0,display:"grid",gap:9}}>{articlesModal.items.map((it,i)=><Headline key={i} it={it}/>)}</ul>
-              : <div style={{color:INK2,fontSize:13.5,lineHeight:1.5}}>No articles loaded for {articlesModal.label} yet. Tap it under “Forecast by topic” to read its headlines.</div>}
+              : <div style={{color:INK2,fontSize:13.5,lineHeight:1.5}}>No articles loaded for {articlesModal.label} yet. Tap it under “Moodcast by topic” to read its headlines.</div>}
           </div>
         </div>
       </div>}
