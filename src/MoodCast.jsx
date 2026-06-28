@@ -609,7 +609,7 @@ const BIG_COUNTRIES = ["United States of America","China","India","Russia","Braz
 // hover for a tooltip, click to read that country's news. Scroll/drag/pinch or
 // the +/−/⤢ buttons to zoom and pan (d3-zoom; transform applied imperatively to
 // the <g> so the 176 paths don't re-render while zooming).
-function MoodMap({ moods, busy, onPick }){
+function MoodMap({ moods, busy, onPick, focusCode, focusKey }){
   const ref=useRef(null), svgRef=useRef(null), gRef=useRef(null), zoomRef=useRef(null);
   const [hover,setHover]=useState(null); // { id, name, mood, x, y }
   const [zoomed,setZoomed]=useState(false);
@@ -618,21 +618,27 @@ function MoodMap({ moods, busy, onPick }){
   useEffect(()=>{
     const svg=select(svgRef.current), g=select(gRef.current);
     const z=d3zoom().scaleExtent([1,9]).translateExtent([[0,0],[MAP_W,MAP_H]])
-      .filter((e)=>{ // wheel + left-drag on desktop; require 2 fingers on touch so 1-finger scrolls the page
-        if(e.type==="wheel") return true;
-        if(e.type.startsWith("touch")) return e.touches && e.touches.length>=2;
-        return !e.button; })
+      .filter((e)=>{ if(e.type==="wheel") return true; if(e.type.startsWith("touch")) return true; return !e.button; }) // one-finger pan on touch
       .on("zoom",(e)=>{ g.attr("transform",e.transform.toString()); setZoomed(e.transform.k>1.05); });
     svg.call(z).on("dblclick.zoom",null);
     zoomRef.current=z;
     return ()=>{ svg.on(".zoom",null); };
   },[]);
+  // Zoom/pan to a specific country (used by the search box).
+  useEffect(()=>{ if(!focusCode||!zoomRef.current)return;
+    const feat=FIT_FC.features.find(f=>String(f.id)===String(focusCode)); if(!feat)return;
+    const b=MAP_PATH.bounds(feat); const w=Math.max(2,b[1][0]-b[0][0]), h=Math.max(2,b[1][1]-b[0][1]);
+    const cx=(b[0][0]+b[1][0])/2, cy=(b[0][1]+b[1][1])/2;
+    const k=Math.max(1.4,Math.min(8, 0.5*Math.min(MAP_W/w, MAP_H/h)));
+    const t=zoomIdentity.translate(MAP_W/2-cx*k, MAP_H/2-cy*k).scale(k);
+    try{ zoomRef.current.transform(select(svgRef.current), t); }catch{}
+  },[focusKey]); // eslint-disable-line
   const zoomBy=(f)=>{ try{ zoomRef.current.scaleBy(select(svgRef.current),f); }catch{} };
   const reset=()=>{ try{ zoomRef.current.transform(select(svgRef.current),zoomIdentity); }catch{} };
   const zBtn={width:30,height:30,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(255,255,255,.92)",border:`1px solid ${LINE}`,borderRadius:9,fontSize:17,fontWeight:800,color:INK,cursor:"pointer",boxShadow:"0 2px 6px rgba(27,35,48,.12)",lineHeight:1};
   return (
-    <div ref={ref} onMouseLeave={()=>setHover(null)} style={{position:"relative",background:"linear-gradient(180deg,#EAF2FB,#F4F8FC)",border:`1px solid ${LINE}`,borderRadius:16,overflow:"hidden"}}>
-      <svg ref={svgRef} viewBox={`0 0 ${MAP_W} ${MAP_H}`} width="100%" style={{display:"block",cursor:"grab",touchAction:"pan-y"}}>
+    <div ref={ref} className="mm-wrap" onMouseLeave={()=>setHover(null)} style={{position:"relative",background:"linear-gradient(180deg,#EAF2FB,#F4F8FC)",border:`1px solid ${LINE}`,borderRadius:16,overflow:"hidden"}}>
+      <svg ref={svgRef} className="mm-svg" viewBox={`0 0 ${MAP_W} ${MAP_H}`} width="100%" preserveAspectRatio="xMidYMid meet" style={{display:"block",cursor:"grab",touchAction:"none"}}>
         <g ref={gRef}>
           {COUNTRY_PATHS.map(c=>{ const ent=moods[c.id]; const isBusy=busy&&busy.includes(c.id); const hot=hover&&hover.id===c.id;
             return <path key={c.id} d={c.d}
@@ -676,6 +682,8 @@ export default function MoodCast(){
   const [worldAllBusy,setWorldAllBusy]=useState(false);
   const [worldProgress,setWorldProgress]=useState(null); // { done, total } during "read all"
   const stopWorldRef=useRef(false);
+  const [mapQ,setMapQ]=useState("");
+  const [mapFocus,setMapFocus]=useState({code:null,key:0});
   const [error,setError]=useState(null);
   const [detail,setDetail]=useState(null);
   const [detailLoading,setDetailLoading]=useState(false);
@@ -919,6 +927,14 @@ export default function MoodCast(){
     setWorldAllBusy(false); setWorldProgress(null);
   };
   const worldCount=Object.keys(worldMoods).length;
+  const COUNTRY_ALIAS={usa:"840",us:"840","united states":"840","america":"840",uk:"826","britain":"826","england":"826",uae:"784","south korea":"410","north korea":"408",drc:"180","congo":"180",czechia:"203",burma:"104"};
+  const searchCountryMap=()=>{ const q=mapQ.trim().toLowerCase(); if(!q)return;
+    // exact name → known alias → starts-with → contains
+    let m=COUNTRY_PATHS.find(c=>c.name.toLowerCase()===q);
+    if(!m&&COUNTRY_ALIAS[q]) m=COUNTRY_PATHS.find(c=>c.id===COUNTRY_ALIAS[q]);
+    if(!m) m=COUNTRY_PATHS.find(c=>c.name.toLowerCase().startsWith(q))||COUNTRY_PATHS.find(c=>c.name.toLowerCase().includes(q));
+    if(m){ setMapFocus({code:m.id,key:Date.now()}); onPickCountry(m.id,m.name); setMapQ(""); }
+  };
   const refreshOne=(ent)=>read([ent],false);
   useEffect(()=>{ if(timer.current){clearInterval(timer.current);timer.current=null;}
     if(auto)timer.current=setInterval(()=>read(includeFollows?[...CATEGORIES,...saved]:[...CATEGORIES],true),Math.max(1,interval)*60000);
@@ -1118,6 +1134,8 @@ export default function MoodCast(){
         .ms .skel{background:linear-gradient(90deg,#EDF0F4 25%,#DFE4EA 37%,#EDF0F4 63%);background-size:360px 100%;animation:ms-shimmer 1.15s linear infinite;border-radius:6px;}
         .ms .busy-card{position:relative;}
         .ms .busy-card::after{content:"";position:absolute;inset:0;border-radius:18px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.45),transparent);background-size:200% 100%;animation:ms-shimmer 1.3s linear infinite;pointer-events:none;}
+        .ms .mm-svg{height:auto;}
+        @media (max-width:640px){ .ms .mm-wrap{height:72vh;max-height:640px;} .ms .mm-wrap .mm-svg{height:100%;} }
         @keyframes ms-blink{0%,80%,100%{opacity:.18;}40%{opacity:1;}}
         .ms .dots b{animation:ms-blink 1.2s infinite;font-weight:900;}
         .ms .dots b:nth-child(2){animation-delay:.2s;} .ms .dots b:nth-child(3){animation-delay:.4s;}
@@ -1143,21 +1161,21 @@ export default function MoodCast(){
         {/* HERO */}
         <section style={{borderRadius:24,overflow:"hidden",position:"relative",background:`linear-gradient(160deg, ${heroTop} 0%, ${heroMid} 100%)`,color:"#fff",padding:"clamp(22px,4vw,36px)",minHeight:230,boxShadow:"0 18px 40px rgba(27,35,48,.18)"}}>
           <div style={{position:"absolute",top:"-30%",right:"-8%",width:280,height:280,borderRadius:"50%",background:`radial-gradient(circle, rgba(255,255,255,${overall!=null?Math.min(.55,overall/160):.2}) 0%, transparent 70%)`,pointerEvents:"none"}}/>
-          <div style={{position:"relative",display:"flex",justifyContent:"space-between",alignItems:"center",gap:16,flexWrap:"wrap"}}>
-            <div>
+          <div style={{position:"absolute",top:"clamp(16px,4.5vw,30px)",right:"clamp(8px,3.5vw,30px)",filter:"drop-shadow(0 6px 14px rgba(0,0,0,.2))",pointerEvents:"none",zIndex:1}}><Glyph mood={overall} size={104}/></div>
+          <div style={{position:"relative"}}>
+            <div style={{paddingRight:"clamp(96px,27vw,132px)"}}>
               <div style={{fontSize:13,opacity:.85,fontWeight:600}}>{today} · public mood</div>
-              <div style={{display:"flex",alignItems:"baseline",gap:14,marginTop:4}}>
+              <div style={{display:"flex",alignItems:"baseline",gap:14,marginTop:4,flexWrap:"wrap"}}>
                 <div style={{fontFamily:F.display,fontWeight:800,fontSize:"clamp(64px,13vw,104px)",lineHeight:.9,letterSpacing:"-0.04em",display:"flex",alignItems:"center",minHeight:"0.9em"}}>{overall!=null?overall:(busy?<Spinner size={52} color="#fff" stroke={3}/>:"——")}</div>
                 <div><div style={{fontFamily:F.display,fontWeight:700,fontSize:"clamp(20px,3.4vw,30px)",lineHeight:1}}>{moodWord(overall)}</div>
                   {delta!=null&&<div style={{fontSize:14,fontWeight:600,opacity:.95,marginTop:4}}>{delta>0?`▲ up ${delta}`:delta<0?`▼ down ${Math.abs(delta)}`:"— steady"} since last</div>}</div>
               </div>
-              <div style={{fontSize:15,opacity:.92,marginTop:10,maxWidth:440,lineHeight:1.45,fontWeight:500}}>{heroSentence}</div>
-              {(brightest||heaviest) && <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:12}}>
-                {brightest && <button onClick={()=>setArticlesModal({label:brightest.c.label,mood:brightest.m,items:results[brightest.c.id]?.items||[]})} style={{display:"inline-flex",alignItems:"center",gap:7,background:moodColor(brightest.m),color:brightest.m<46?"#fff":INK,border:"none",borderRadius:999,padding:"5px 12px",fontSize:12.5,fontWeight:600,cursor:"pointer"}}><span style={{fontSize:15,lineHeight:1}}>☀️</span><b style={{fontWeight:800}}>Brightest</b> {brightest.c.label} · {brightest.m} <span style={{opacity:.65}}>›</span></button>}
-                {heaviest && (!brightest||heaviest.c.id!==brightest.c.id) && <button onClick={()=>setArticlesModal({label:heaviest.c.label,mood:heaviest.m,items:results[heaviest.c.id]?.items||[]})} style={{display:"inline-flex",alignItems:"center",gap:7,background:moodColor(heaviest.m),color:heaviest.m<46?"#fff":INK,border:"none",borderRadius:999,padding:"5px 12px",fontSize:12.5,fontWeight:600,cursor:"pointer"}}><span style={{fontSize:15,lineHeight:1}}>⛈️</span><b style={{fontWeight:800}}>Heaviest</b> {heaviest.c.label} · {heaviest.m} <span style={{opacity:.65}}>›</span></button>}
-              </div>}
             </div>
-            <div style={{filter:"drop-shadow(0 6px 14px rgba(0,0,0,.2))"}}><Glyph mood={overall} size={108}/></div>
+            <div style={{fontSize:15,opacity:.92,marginTop:10,maxWidth:440,lineHeight:1.45,fontWeight:500}}>{heroSentence}</div>
+            {(brightest||heaviest) && <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:12}}>
+              {brightest && <button onClick={()=>setArticlesModal({label:brightest.c.label,mood:brightest.m,items:results[brightest.c.id]?.items||[]})} style={{display:"inline-flex",alignItems:"center",gap:7,background:moodColor(brightest.m),color:brightest.m<46?"#fff":INK,border:"none",borderRadius:999,padding:"5px 12px",fontSize:12.5,fontWeight:600,cursor:"pointer"}}><span style={{fontSize:15,lineHeight:1}}>☀️</span><b style={{fontWeight:800}}>Brightest</b> {brightest.c.label} · {brightest.m} <span style={{opacity:.65}}>›</span></button>}
+              {heaviest && (!brightest||heaviest.c.id!==brightest.c.id) && <button onClick={()=>setArticlesModal({label:heaviest.c.label,mood:heaviest.m,items:results[heaviest.c.id]?.items||[]})} style={{display:"inline-flex",alignItems:"center",gap:7,background:moodColor(heaviest.m),color:heaviest.m<46?"#fff":INK,border:"none",borderRadius:999,padding:"5px 12px",fontSize:12.5,fontWeight:600,cursor:"pointer"}}><span style={{fontSize:15,lineHeight:1}}>⛈️</span><b style={{fontWeight:800}}>Heaviest</b> {heaviest.c.label} · {heaviest.m} <span style={{opacity:.65}}>›</span></button>}
+            </div>}
           </div>
           {overall!=null && <HeroVote overall={overall} data={votes["overall"]} mine={myVotes["overall"]} onVote={(dir)=>handleVote("overall",dir)} count={commentCounts["overall"]} onComment={()=>setCommentsFor({id:"overall",label:"Today’s mood"})}/>}
           <div style={{position:"relative",marginTop:18,display:"flex",gap:10,flexWrap:"wrap",alignItems:"center"}}>
@@ -1386,8 +1404,13 @@ export default function MoodCast(){
               </>)}
             </div>
           </div>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginTop:12,background:CARD,border:`1px solid ${LINE}`,borderRadius:12,padding:"7px 9px 7px 13px"}}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={INK2} strokeWidth="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+            <input value={mapQ} onChange={e=>setMapQ(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")searchCountryMap();}} placeholder="Jump to a country — type a name…" style={{flex:1,border:"none",background:"transparent",fontSize:14,fontFamily:"inherit",outline:"none",color:INK}}/>
+            <button onClick={searchCountryMap} disabled={!mapQ.trim()} style={{background:ACCENT,color:"#fff",border:"none",borderRadius:9,padding:"7px 14px",fontSize:13,fontWeight:700,opacity:mapQ.trim()?1:.5,cursor:mapQ.trim()?"pointer":"not-allowed"}}>Go</button>
+          </div>
           <div style={{marginTop:12}}>
-            <MoodMap moods={worldMoods} busy={worldBusy} onPick={onPickCountry}/>
+            <MoodMap moods={worldMoods} busy={worldBusy} onPick={onPickCountry} focusCode={mapFocus.code} focusKey={mapFocus.key}/>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:10,marginTop:12,flexWrap:"wrap"}}>
             <span style={{fontSize:11.5,color:INK2,fontWeight:700}}>Stormy</span>
