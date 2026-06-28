@@ -1101,11 +1101,13 @@ export default function MoodCast(){
   const pxToT=(clientX)=>{ const r=chartWrapRef.current?.getBoundingClientRect(); if(!r)return domRef.current.start; const f=Math.min(1,Math.max(0,(clientX-r.left-22)/(r.width-30))); return domRef.current.start+f*curSpan(); };
   const panByPx=(dx)=>{ const r=chartWrapRef.current?.getBoundingClientRect(); const w=r?(r.width-30):600; const dt=-(dx/w)*curSpan(); const d=domRef.current; setView(clampWin(d.start+dt,d.end+dt)); };
   const zoomAt=(factor,centerT)=>{ const d=domRef.current; const span=d.end-d.start; const ns=Math.min(Math.max(span*factor,MIN_SPAN),Math.max(MIN_SPAN,boundsRef.current[1]-boundsRef.current[0])); const ratio=Math.min(1,Math.max(0,(centerT-d.start)/span)); const start=centerT-ratio*ns; setView(clampWin(start,start+ns)); };
-  const chartPointerDown=(e)=>{ try{chartWrapRef.current?.setPointerCapture?.(e.pointerId);}catch{} ptrsRef.current.set(e.pointerId,e.clientX); pannedRef.current=false;
-    if(ptrsRef.current.size===2){ const xs=[...ptrsRef.current.values()]; pinchRef.current={d:Math.abs(xs[0]-xs[1])||1,c:pxToT((xs[0]+xs[1])/2)}; } };
-  const chartPointerMove=(e)=>{ if(!ptrsRef.current.has(e.pointerId))return; const prev=ptrsRef.current.get(e.pointerId);
-    if(ptrsRef.current.size===2){ ptrsRef.current.set(e.pointerId,e.clientX); const xs=[...ptrsRef.current.values()]; const nd=Math.abs(xs[0]-xs[1])||1; const pr=pinchRef.current; if(pr){ pannedRef.current=true; zoomAt(pr.d/nd,pr.c); pinchRef.current={d:nd,c:pr.c}; } return; }
-    const dx=e.clientX-prev; ptrsRef.current.set(e.pointerId,e.clientX); if(Math.abs(dx)>3)pannedRef.current=true; if(pannedRef.current)panByPx(dx); };
+  // No setPointerCapture — it swallows recharts' click. We tell a tap from a
+  // drag by total travel from the press point (>7px = a pan, not a tap).
+  const chartPointerDown=(e)=>{ ptrsRef.current.set(e.pointerId,{x:e.clientX,sx:e.clientX}); pannedRef.current=false;
+    if(ptrsRef.current.size===2){ const xs=[...ptrsRef.current.values()].map(p=>p.x); pinchRef.current={d:Math.abs(xs[0]-xs[1])||1,c:pxToT((xs[0]+xs[1])/2)}; } };
+  const chartPointerMove=(e)=>{ const p=ptrsRef.current.get(e.pointerId); if(!p)return;
+    if(ptrsRef.current.size===2){ p.x=e.clientX; const xs=[...ptrsRef.current.values()].map(q=>q.x); const nd=Math.abs(xs[0]-xs[1])||1; const pr=pinchRef.current; if(pr){ pannedRef.current=true; zoomAt(pr.d/nd,pr.c); pinchRef.current={d:nd,c:pr.c}; } return; }
+    const dx=e.clientX-p.x; p.x=e.clientX; if(Math.abs(e.clientX-p.sx)>7)pannedRef.current=true; if(pannedRef.current)panByPx(dx); };
   const chartPointerUp=(e)=>{ ptrsRef.current.delete(e.pointerId); if(ptrsRef.current.size<2)pinchRef.current=null; };
   useEffect(()=>{ const el=chartWrapRef.current; if(!el)return;
     const onWheel=(e)=>{ e.preventDefault(); zoomAt(e.deltaY>0?1.2:0.84, pxToT(e.clientX)); };
