@@ -264,13 +264,14 @@ async function fetchCountrySeries(label, fromYear, toYear){
   const n=toYear-fromYear+1;
   // Compact numeric format (one array of ints + an events map) so the response
   // stays small enough to never truncate — a per-year object list blows the cap.
-  const sys=`You estimate a nation's public MOOD each year on a 0–100 scale (0=bleak/stormy, 50=neutral, 100=hopeful/radiant), grounded in documented history. Respond ONLY valid compact JSON, no markdown, no prose: {"from":${fromYear},"moods":[<exactly ${n} integers 0-100, one per year ${fromYear}..${toYear}>],"events":{"<year>":"<<=6 words>"}}.
+  const sys=`You estimate the public MOOD of a country/territory each year on a 0–100 scale (0=bleak/stormy, 50=neutral, 100=hopeful/radiant), grounded in documented history. Respond ONLY valid compact JSON, no markdown, no prose: {"from":${fromYear},"moods":[<exactly ${n} integers 0-100, one per year ${fromYear}..${toYear} with NO gaps>],"events":{"<year>":"<<=6 words>"}}.
 CALIBRATE CAREFULLY against reality — the number MUST match what was happening:
-- Pandemics, wars, famines, coups, civil conflict, severe recessions/depressions, disasters = LOW (15–40). COVID-19 in 2020 should dip LOW for almost every country.
-- Peace, growth, optimism, major positive milestones = HIGH (58–75). Calm/mixed years = 45–55.
+- Pandemics, wars, famines, coups, colonization, civil conflict, severe recessions/depressions, disasters = LOW (15–40). COVID-19 in 2020 should dip LOW for almost every country.
+- Peace, growth, independence, optimism, major positive milestones = HIGH (58–75). Calm/mixed years = 45–55.
 - NEVER score a crisis year above 45. If you label a year with a hardship event, its mood MUST be low.
-Put events only on genuinely notable years.`;
-  try{ const txt=await callModel(sys,`Country: ${label}. Annual public mood ${fromYear}–${toYear}. Remember: crisis years must be low.`, 1600);
+- For years before the modern state existed, estimate the mood of the people in that territory under whatever rule applied (empire, colony, kingdom).
+You MUST output all ${n} values through ${toYear}. Put events only on genuinely notable years.`;
+  try{ const txt=await callModel(sys,`Country/territory: ${label}. Annual public mood for every year ${fromYear}–${toYear}. Crisis years must be low; output all ${n} values.`, 2000);
     const p=parseJson(txt); if(!p||!Array.isArray(p.moods))return [];
     const from=parseInt(p.from,10)||fromYear; const events=(p.events&&typeof p.events==="object")?p.events:{};
     return p.moods.map((m,i)=>{ const y=from+i; let v=Math.round(Number(m));
@@ -895,10 +896,10 @@ export default function MoodCast(){
   const ensureCountrySeries=useCallback(async(code,label)=>{
     if(code==="840")return; // the U.S. uses the curated series, no generation needed
     if(countrySeries[code]||csBusy.includes(code))return;
-    const cached=await store.get("ms:cseries:v2:"+code); if(cached&&cached.length){ setCountrySeries(s=>({...s,[code]:cached})); return; }
+    const cached=await store.get("ms:cseries:v3:"+code); if(cached&&cached.length){ setCountrySeries(s=>({...s,[code]:cached})); return; }
     setCsBusy(b=>[...b,code]);
-    const pts=await fetchCountrySeries(label,1970,new Date().getFullYear());
-    if(pts.length){ setCountrySeries(s=>({...s,[code]:pts})); store.set("ms:cseries:v2:"+code,pts); }
+    const pts=await fetchCountrySeries(label,1700,new Date().getFullYear());
+    if(pts.length){ setCountrySeries(s=>({...s,[code]:pts})); store.set("ms:cseries:v3:"+code,pts); }
     else setCountrySeries(s=>({...s,[code]:[]})); // mark done so the spinner clears even on failure
     setCsBusy(b=>b.filter(x=>x!==code));
   },[countrySeries,csBusy]);
@@ -1138,8 +1139,10 @@ export default function MoodCast(){
     const apply=(o)=>setYearNote(n=>n&&n.t===p.t?{...n,text:stripCites(o.text),ev:stripCites(o.title)||n.ev,mood:(!isUSscopeClick&&o.mood!=null)?o.mood:n.mood,loading:false}:n);
     const remember=(title,mood)=>{ if(!title)return; setKnownPoints(k=>{ const cur=k[scope]||[]; const rest=cur.filter(x=>x.t!==p.t); return {...k,[scope]:[...rest,{t:p.t,title,mood:isUSscopeClick?null:(mood??null)}]}; }); };
     // 1) this device, 2) the shared DB (free), 3) generate once and save to both.
+    // Always push to the shared DB so EVERY queried point becomes a shared dot,
+    // even ones cached locally before sharing existed (server is first-writer-wins).
     const local=await store.get(lsKey);
-    if(local&&local.text){ apply(local); remember(local.title,local.mood); return; }
+    if(local&&local.text){ const c={title:stripCites(local.title),text:stripCites(local.text),mood:local.mood}; apply(c); remember(c.title,c.mood); saveNoteFull(scope,p.t,c.title,c.text,c.mood); return; }
     const shared=await fetchNoteFull(scope,p.t);
     if(shared){ store.set(lsKey,shared); apply(shared); remember(shared.title,shared.mood); return; }
     try{
@@ -1545,7 +1548,7 @@ export default function MoodCast(){
             <div style={{fontSize:13.5,color:INK,marginTop:8,lineHeight:1.5}}>{yearNote.loading?<span style={{display:"inline-flex",alignItems:"center",gap:8,color:INK2}}><Spinner size={15}/>Looking back at {yearNote.label}…</span>:yearNote.text}</div>
           </div>}
           <div style={{fontSize:11,color:"#9AA3AE",padding:"6px 6px 0",lineHeight:1.5}}>{scopedCountry
-            ? <>An <b style={{fontWeight:700}}>AI estimate</b> of {scopedCountry.label}’s public mood since 1970, reconstructed from its documented history — not a measurement. <b style={{fontWeight:700}}>Tap any point</b> on the line to learn what was happening. Select a country on the Mood Map to switch, or × to return to the U.S.</>
+            ? <>An <b style={{fontWeight:700}}>AI estimate</b> of {scopedCountry.label}’s public mood back to ~1700, reconstructed from documented history — not a measurement. <b style={{fontWeight:700}}>Tap any point</b> on the line to learn what was happening (it’s saved & shared with everyone). Select a country on the Mood Map to switch, or × to return to the U.S.</>
             : <>The shaded stretch is a <b style={{fontWeight:700}}>historical estimate</b> of U.S. public mood, not a measurement — reconstructed from documented conditions, and from 1952 the U. Michigan Consumer Sentiment Index and (from 1979) Gallup. <b style={{fontWeight:700}}>Tap any point</b> on the line to learn why. Pick a country on the Mood Map to see its history. Your live readings add real data from today.</>}</div>
         </section>
 
