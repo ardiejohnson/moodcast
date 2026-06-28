@@ -147,6 +147,8 @@ const store = {
   async set(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch{} },
 };
 function parseJson(t){ if(!t)return null; let s=t.replace(/```json/gi,"").replace(/```/g,"").trim(); try{return JSON.parse(s);}catch{} const a=s.indexOf("{"),b=s.lastIndexOf("}"); if(a!==-1&&b>a){try{return JSON.parse(s.slice(a,b+1));}catch{return null;}} return null; }
+// Strip web-search citation markup the model sometimes leaves in prose.
+function stripCites(s){ return String(s==null?"":s).replace(/<\/?cite[^>]*>/gi,"").replace(/ +([.,;:!?])/g,"$1").replace(/\s{2,}/g," ").trim(); }
 
 let PASSCODE = "";          // set from localStorage on mount / when the user enters it
 let onAuthFail = null;      // registered by the app to open the passcode gate on a 401
@@ -1015,7 +1017,7 @@ export default function MoodCast(){
         `Dashboard topic moods: ${ctx||"none yet"}.${worldCtx?` Country moods already read on the Mood Map: ${worldCtx}.`:""}\n`+
         `Respond ONLY JSON: {"answer":"<specific, substantive, conversational, <=70 words; name the real answer and a concrete why>","subject":"<the resolved subject/country/place if any, else empty>","score":<integer -100..100 or null>}.`;
       const txt=await callModel(system,text,700); const p=parseJson(txt)||{};
-      const ans=String(p.answer||"I couldn't find a clear answer to that.").slice(0,400);
+      const ans=stripCites(String(p.answer||"I couldn't find a clear answer to that.")).slice(0,400);
       const subj=(p.subject||"").trim()||null; const mood=typeof p.score==="number"?toMood(p.score):null;
       setAnswer({ answer:ans, subject:subj, mood, raw:text });
       // Share genuine, answered mood questions to the public feed for others.
@@ -1133,7 +1135,7 @@ export default function MoodCast(){
     const lsKey="ms:why:"+scope+":"+p.t;
     // A focused single-year analysis is far more accurate than the bulk series,
     // so its mood corrects the curve at that point (US curated values are kept).
-    const apply=(o)=>setYearNote(n=>n&&n.t===p.t?{...n,text:o.text,ev:o.title||n.ev,mood:(!isUSscopeClick&&o.mood!=null)?o.mood:n.mood,loading:false}:n);
+    const apply=(o)=>setYearNote(n=>n&&n.t===p.t?{...n,text:stripCites(o.text),ev:stripCites(o.title)||n.ev,mood:(!isUSscopeClick&&o.mood!=null)?o.mood:n.mood,loading:false}:n);
     const remember=(title,mood)=>{ if(!title)return; setKnownPoints(k=>{ const cur=k[scope]||[]; const rest=cur.filter(x=>x.t!==p.t); return {...k,[scope]:[...rest,{t:p.t,title,mood:isUSscopeClick?null:(mood??null)}]}; }); };
     // 1) this device, 2) the shared DB (free), 3) generate once and save to both.
     const local=await store.get(lsKey);
@@ -1144,7 +1146,7 @@ export default function MoodCast(){
       const sys=`You are a concise, accurate social historian for a 'public mood' app. Analyze this ONE year carefully. Respond ONLY valid JSON, no markdown: {"title":"<2–4 word event label, e.g. 'Financial crisis' or 'Housing boom'>","mood":<your OWN careful 0-100 estimate of public mood for ${place} in THIS year — 0=bleak, 50=neutral, 100=radiant; crises/wars/pandemics/recessions are LOW (15-40), peace/growth/optimism HIGH (58-75); the number must match the events>,"text":"<3–5 sentences explaining the mood and WHY — specific real events, economy, conflict, politics, culture. No preamble.>"}`;
       const user=`Country: ${place}. Time: ${label}. A rough prior estimate was ${p.overall}/100, but judge it yourself from the actual events. Give title, your calibrated mood, and explanation.`;
       const raw=await callModel(sys,user);
-      const j=parseJson(raw)||{}; const text=(j.text||"").trim(); const title=(j.title||"").trim();
+      const j=parseJson(raw)||{}; const text=stripCites((j.text||"").trim()); const title=stripCites((j.title||"").trim());
       const mood=Number.isFinite(Number(j.mood))?Math.max(0,Math.min(100,Math.round(Number(j.mood)))):null;
       if(text){ const o={title,text,mood}; store.set(lsKey,o); saveNoteFull(scope,p.t,title,text,mood); apply(o); remember(title,mood); }
       else apply({text:"Couldn't load an explanation right now — try again."});
