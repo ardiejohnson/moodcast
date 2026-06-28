@@ -234,6 +234,22 @@ function mockApiPlugin() {
         }
         next()
       })
+
+      // In-memory shared "why" note cache: notes[key] = text
+      const notes = {}
+      server.middlewares.use('/api/note', async (req, res, next) => {
+        res.setHeader('content-type', 'application/json')
+        const url = new URL(req.url, 'http://localhost')
+        if (req.method === 'GET') { res.end(JSON.stringify({ text: notes[url.searchParams.get('key')] || null, mocked: true })); return }
+        if (req.method === 'POST') {
+          const b = await readBody(req)
+          if (!b.key || !b.text) { res.statusCode = 400; res.end('{"error":"bad"}'); return }
+          if (!notes[b.key]) notes[b.key] = String(b.text).slice(0, 2000)
+          res.end('{"ok":true,"mocked":true}')
+          return
+        }
+        next()
+      })
     },
   }
 }

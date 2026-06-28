@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { LineChart, Line, XAxis, YAxis, ReferenceLine, ReferenceArea, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import { LineChart, Line, XAxis, YAxis, ReferenceLine, ReferenceArea, ReferenceDot, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { geoNaturalEarth1, geoPath } from "d3-geo";
 import { feature as topoFeature } from "topojson-client";
 import { select } from "d3-selection";
@@ -160,6 +160,19 @@ async function callModel(system, user, maxTokens){
   if(!res.ok) throw new Error("HTTP "+res.status);
   const data = await res.json();
   return data.text || "";
+}
+// Shared cache of chart "why" explanations (see api/note.js) — first visitor to
+// query a year pays the tokens; everyone after reads it free.
+async function fetchNote(key){
+  try{ const res=await fetch(`/api/note?key=${encodeURIComponent(key)}`,{cache:"no-store"});
+    if(!res.ok)return null; const d=await res.json(); return d.text||null;
+  }catch{ return null; }
+}
+async function saveNote(key,text){
+  try{ await fetch("/api/note",{ method:"POST",
+    headers:{ "Content-Type":"application/json", "x-moodcast-pass":PASSCODE },
+    body:JSON.stringify({ key, text }) });
+  }catch{ /* best-effort */ }
 }
 async function gradeQuery(query, n=4){
   const system = `You are a public-mood analyst. Use web search to find the ${n} most recent items about the subject, `+
@@ -1002,16 +1015,21 @@ export default function MoodCast(){
     setYearNote({ t:p.t, label, mood:p.overall, ev:p.ev, live:p.live, text:null, loading:!p.live });
     if(p.live){ setYearNote(n=>n&&n.t===p.t?{...n,text:`A real reading taken on ${label} — the news mood read ${p.overall}/100 (${moodWord(p.overall)}).`,loading:false}:n); return; }
     const place=scopedCountry?scopedCountry.label:"the United States";
-    const key="ms:why:"+(scopedCountry?scopedCountry.code+":":"")+p.t;
-    const cached=await store.get(key);
-    if(cached){ setYearNote(n=>n&&n.t===p.t?{...n,text:cached,loading:false}:n); return; }
+    const noteKey=(scopedCountry?scopedCountry.code:"us")+":"+p.t; // shared-DB key
+    const lsKey="ms:why:"+noteKey;
+    const apply=(txt)=>setYearNote(n=>n&&n.t===p.t?{...n,text:txt,loading:false}:n);
+    // 1) this device, 2) the shared DB (free), 3) generate once and save to both.
+    const local=await store.get(lsKey);
+    if(local){ apply(local); return; }
+    const shared=await fetchNote(noteKey);
+    if(shared){ store.set(lsKey,shared); apply(shared); return; }
     try{
       const sys=`You are a concise, accurate social historian writing for a 'public mood' app. In 3–5 sentences, explain the mood and national sentiment of ${place} at the given time and WHY — the specific events, economy, conflict, politics, or cultural currents that shaped how optimistic or pessimistic people felt. Be factual and specific; name real events. No preamble, no caveats about data.`;
       const user=`Country: ${place}. Time: ${label}. Estimated public mood: ${p.overall}/100 (0=stormy/bleak, 50=neutral, 100=radiant/hopeful)${p.ev?`. Key marker: ${p.ev}`:""}. Explain why the mood was around this level then.`;
       const txt=await callModel(sys,user);
-      if(txt){ store.set(key,txt); setYearNote(n=>n&&n.t===p.t?{...n,text:txt,loading:false}:n); }
-      else setYearNote(n=>n&&n.t===p.t?{...n,text:"Couldn't load an explanation right now — try again.",loading:false}:n);
-    }catch{ setYearNote(n=>n&&n.t===p.t?{...n,text:"Couldn't load an explanation right now — try again.",loading:false}:n); }
+      if(txt){ store.set(lsKey,txt); saveNote(noteKey,txt); apply(txt); }
+      else apply("Couldn't load an explanation right now — try again.");
+    }catch{ apply("Couldn't load an explanation right now — try again."); }
   };
   const outBusy=searchBusy||questionBusy;
 
@@ -1365,6 +1383,7 @@ export default function MoodCast(){
                 <ReferenceLine y={50} stroke={INK2} strokeDasharray="3 3"/>
                 <Tooltip content={(props)=><MoodTip {...props} labelFmt={labelFmt}/>}/>
                 <Line type="monotone" dataKey="overall" name="Public mood" stroke="url(#mg)" strokeWidth={range==="250Y"||range==="100Y"?2:3} dot={false} isAnimationActive={!reduced}/>
+                {yearNote && <ReferenceDot x={yearNote.t} y={yearNote.mood} r={6} fill={moodColor(yearNote.mood)} stroke="#fff" strokeWidth={2.5} ifOverflow="hidden" isFront/>}
               </LineChart>
             </ResponsiveContainer>}
           {yearNote && <div style={{margin:"12px 6px 4px",background:`linear-gradient(135deg, ${rgb(scl(moodRGB(yearNote.mood),.86))}, #FFFFFF)`,border:`1px solid ${LINE}`,borderRadius:14,padding:"14px 16px"}}>
