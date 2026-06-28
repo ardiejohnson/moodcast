@@ -54,11 +54,11 @@ export default async function handler(req, res) {
       if (t) { // one full entry
         const raw = await redis.hget(key(scope), t);
         const v = parse(raw) || {};
-        return res.status(200).json({ title: v.title || null, text: v.text || null });
+        return res.status(200).json({ title: v.title || null, text: v.text || null, mood: (typeof v.mood === 'number') ? v.mood : null });
       }
-      // list of points (titles only) for rendering dots
+      // list of points (title + corrected mood) for rendering dots
       const all = await redis.hgetall(key(scope));
-      const points = Object.entries(all || {}).map(([ts, v]) => { const p = parse(v) || {}; return { t: Number(ts), title: p.title || '' }; }).filter((p) => Number.isFinite(p.t));
+      const points = Object.entries(all || {}).map(([ts, v]) => { const p = parse(v) || {}; return { t: Number(ts), title: p.title || '', mood: (typeof p.mood === 'number') ? p.mood : null }; }).filter((p) => Number.isFinite(p.t));
       return res.status(200).json({ points });
     }
 
@@ -75,9 +75,11 @@ export default async function handler(req, res) {
       const t = cleanT(body?.t);
       const title = String(body?.title || '').slice(0, 48);
       const text = String(body?.text || '').slice(0, 2000);
+      const moodNum = Math.round(Number(body?.mood));
+      const mood = Number.isFinite(moodNum) ? Math.max(0, Math.min(100, moodNum)) : null;
       if (!t || !text) return res.status(400).json({ error: 'Expected t and text.' });
       const exists = await redis.hget(key(scope), t); // first writer wins (no drift)
-      if (!exists) await redis.hset(key(scope), { [t]: JSON.stringify({ title, text }) });
+      if (!exists) await redis.hset(key(scope), { [t]: JSON.stringify({ title, text, ...(mood != null ? { mood } : {}) }) });
       return res.status(200).json({ ok: true });
     }
 

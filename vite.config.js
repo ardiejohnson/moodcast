@@ -86,7 +86,7 @@ function mockApiPlugin() {
             ] })
           } else if (system.includes('historian')) {
             const when = user.match(/Time:\s*(.+?)\./)?.[1] || 'This period'
-            text = JSON.stringify({ title: '[mock] Notable era', text: `${when} was shaped by the major economic and political currents of its day — booms, busts, wars, and shifting public confidence. (Local mock; the real app returns a researched paragraph.)` })
+            text = JSON.stringify({ title: '[mock] Notable era', mood: 38, text: `${when} was shaped by the major economic and political currents of its day — booms, busts, wars, and shifting public confidence. (Local mock; the real app returns a researched paragraph.)` })
           }
           else text = system.includes('"items"') ? gradeMock(system, user) : answerMock(system, user)
           res.setHeader('content-type', 'application/json')
@@ -247,15 +247,15 @@ function mockApiPlugin() {
           const scope = url.searchParams.get('scope') || 'us'
           const t = url.searchParams.get('t')
           const m = notes[scope] || {}
-          if (t) { const v = m[t] || {}; res.end(JSON.stringify({ title: v.title || null, text: v.text || null, mocked: true })); return }
-          res.end(JSON.stringify({ points: Object.entries(m).map(([ts, v]) => ({ t: Number(ts), title: v.title || '' })), mocked: true }))
+          if (t) { const v = m[t] || {}; res.end(JSON.stringify({ title: v.title || null, text: v.text || null, mood: (typeof v.mood === 'number') ? v.mood : null, mocked: true })); return }
+          res.end(JSON.stringify({ points: Object.entries(m).map(([ts, v]) => ({ t: Number(ts), title: v.title || '', mood: (typeof v.mood === 'number') ? v.mood : null })), mocked: true }))
           return
         }
         if (req.method === 'POST') {
           const b = await readBody(req)
           if (!b.t || !b.text) { res.statusCode = 400; res.end('{"error":"bad"}'); return }
           const scope = b.scope || 'us'; notes[scope] = notes[scope] || {}
-          if (!notes[scope][String(b.t)]) notes[scope][String(b.t)] = { title: String(b.title || '').slice(0, 48), text: String(b.text).slice(0, 2000) }
+          if (!notes[scope][String(b.t)]) notes[scope][String(b.t)] = { title: String(b.title || '').slice(0, 48), text: String(b.text).slice(0, 2000), ...(typeof b.mood === 'number' ? { mood: b.mood } : {}) }
           res.end('{"ok":true,"mocked":true}')
           return
         }

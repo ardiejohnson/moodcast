@@ -170,13 +170,13 @@ async function fetchKnownPoints(scope){
 }
 async function fetchNoteFull(scope,t){
   try{ const res=await fetch(`/api/note?scope=${encodeURIComponent(scope)}&t=${t}`,{cache:"no-store"});
-    if(!res.ok)return null; const d=await res.json(); return (d.title||d.text)?{title:d.title||"",text:d.text||""}:null;
+    if(!res.ok)return null; const d=await res.json(); return (d.title||d.text)?{title:d.title||"",text:d.text||"",mood:(typeof d.mood==="number")?d.mood:null}:null;
   }catch{ return null; }
 }
-async function saveNoteFull(scope,t,title,text){
+async function saveNoteFull(scope,t,title,text,mood){
   try{ await fetch("/api/note",{ method:"POST",
     headers:{ "Content-Type":"application/json", "x-moodcast-pass":PASSCODE },
-    body:JSON.stringify({ scope, t, title, text }) });
+    body:JSON.stringify({ scope, t, title, text, ...(mood!=null?{mood}:{}) }) });
   }catch{ /* best-effort */ }
 }
 async function gradeQuery(query, n=4){
@@ -243,17 +243,27 @@ function translateUrl(url){
 }
 // Ask the model for an annual public-mood history of a country (AI estimate,
 // cached). Mirrors the U.S. reconstruction but generated on demand per country.
+// Years a labelled event clearly signals hardship — used to sanity-cap the
+// bulk series, which often leaves a "crisis" year scored implausibly high.
+const NEG_EVENT=/(covid|pandemic|\bwar\b|civil war|famine|drought|coup|genocide|massacre|crisis|recession|depression|crash|collapse|default|unrest|riot|coup|insurgen|terror|disaster|earthquake|cyclone|epidemic|lockdown|inflation|hyperinflation|sanction|occupation|invasion|assassinat|austerity)/i;
 async function fetchCountrySeries(label, fromYear, toYear){
   const n=toYear-fromYear+1;
   // Compact numeric format (one array of ints + an events map) so the response
   // stays small enough to never truncate — a per-year object list blows the cap.
-  const sys=`You estimate a nation's public MOOD each year on a 0–100 scale (0=bleak/stormy, 50=neutral, 100=hopeful/radiant), grounded in documented history — economy, conflict, politics, disasters, milestones. Respond ONLY valid compact JSON, no markdown, no prose: {"from":${fromYear},"moods":[<exactly ${n} integers 0-100, one per year ${fromYear}..${toYear}>],"events":{"<year>":"<<=6 words>"}}. Put events only on genuinely notable years (wars, crises, booms, pandemics, milestones).`;
-  try{ const txt=await callModel(sys,`Country: ${label}. Annual public mood ${fromYear}–${toYear}.`, 1600);
+  const sys=`You estimate a nation's public MOOD each year on a 0–100 scale (0=bleak/stormy, 50=neutral, 100=hopeful/radiant), grounded in documented history. Respond ONLY valid compact JSON, no markdown, no prose: {"from":${fromYear},"moods":[<exactly ${n} integers 0-100, one per year ${fromYear}..${toYear}>],"events":{"<year>":"<<=6 words>"}}.
+CALIBRATE CAREFULLY against reality — the number MUST match what was happening:
+- Pandemics, wars, famines, coups, civil conflict, severe recessions/depressions, disasters = LOW (15–40). COVID-19 in 2020 should dip LOW for almost every country.
+- Peace, growth, optimism, major positive milestones = HIGH (58–75). Calm/mixed years = 45–55.
+- NEVER score a crisis year above 45. If you label a year with a hardship event, its mood MUST be low.
+Put events only on genuinely notable years.`;
+  try{ const txt=await callModel(sys,`Country: ${label}. Annual public mood ${fromYear}–${toYear}. Remember: crisis years must be low.`, 1600);
     const p=parseJson(txt); if(!p||!Array.isArray(p.moods))return [];
     const from=parseInt(p.from,10)||fromYear; const events=(p.events&&typeof p.events==="object")?p.events:{};
-    return p.moods.map((m,i)=>{ const y=from+i; const v=Math.round(Number(m));
-      if(!Number.isFinite(v))return null;
-      const ev=events[String(y)]; return { t:Date.UTC(y,6,1), overall:Math.max(0,Math.min(100,v)), ev:ev?String(ev).trim():undefined, est:true };
+    return p.moods.map((m,i)=>{ const y=from+i; let v=Math.round(Number(m));
+      if(!Number.isFinite(v))return null; v=Math.max(0,Math.min(100,v));
+      const ev=events[String(y)]?String(events[String(y)]).trim():undefined;
+      if(ev&&NEG_EVENT.test(ev)&&v>45) v=42; // guardrail: crisis-labelled year can't read high
+      return { t:Date.UTC(y,6,1), overall:v, ev, est:true };
     }).filter(Boolean);
   }catch{ return []; }
 }
@@ -854,10 +864,10 @@ export default function MoodCast(){
   const ensureCountrySeries=useCallback(async(code,label)=>{
     if(code==="840")return; // the U.S. uses the curated series, no generation needed
     if(countrySeries[code]||csBusy.includes(code))return;
-    const cached=await store.get("ms:cseries:"+code); if(cached&&cached.length){ setCountrySeries(s=>({...s,[code]:cached})); return; }
+    const cached=await store.get("ms:cseries:v2:"+code); if(cached&&cached.length){ setCountrySeries(s=>({...s,[code]:cached})); return; }
     setCsBusy(b=>[...b,code]);
     const pts=await fetchCountrySeries(label,1970,new Date().getFullYear());
-    if(pts.length){ setCountrySeries(s=>({...s,[code]:pts})); store.set("ms:cseries:"+code,pts); }
+    if(pts.length){ setCountrySeries(s=>({...s,[code]:pts})); store.set("ms:cseries:v2:"+code,pts); }
     else setCountrySeries(s=>({...s,[code]:[]})); // mark done so the spinner clears even on failure
     setCsBusy(b=>b.filter(x=>x!==code));
   },[countrySeries,csBusy]);
@@ -1006,8 +1016,10 @@ export default function MoodCast(){
   // Shared queried-point markers for the current scope → titles on the tooltip + dots.
   const noteScope=scopedCountry?scopedCountry.code:"us";
   const known=knownPoints[noteScope]||[];
-  const knownByT={}; known.forEach(kp=>{ knownByT[kp.t]=kp.title; });
-  const chartData=fullHistory.filter(p=>p.t>=cutoff).map(p=>(knownByT[p.t]!==undefined?{...p,ev:knownByT[p.t]||p.ev,known:true}:p));
+  const knownByT={}; known.forEach(kp=>{ knownByT[kp.t]={title:kp.title,mood:kp.mood}; });
+  // A queried point's focused mood (when present) corrects the coarse series value.
+  const chartData=fullHistory.filter(p=>p.t>=cutoff).map(p=>{ const k=knownByT[p.t]; if(!k)return p;
+    return {...p, ev:k.title||p.ev, overall:(k.mood!=null?k.mood:p.overall), known:true}; });
   const chartDots=known.map(kp=>{ const pt=chartData.find(d=>d.t===kp.t); return pt?{t:kp.t,y:pt.overall,title:kp.title}:null; }).filter(Boolean);
   // Shade the estimated stretch within view: from the first visible point up to where real data begins.
   const seedStart=chartData.length?chartData[0].t:0;
@@ -1033,20 +1045,24 @@ export default function MoodCast(){
     setYearNote({ t:p.t, label, mood:p.overall, ev:p.ev, live:p.live, text:null, loading:!p.live });
     if(p.live){ setYearNote(n=>n&&n.t===p.t?{...n,text:`A real reading taken on ${label} — the news mood read ${p.overall}/100 (${moodWord(p.overall)}).`,loading:false}:n); return; }
     const place=scopedCountry?scopedCountry.label:"the United States";
+    const isUSscopeClick=!scopedCountry; // US uses the curated series — don't override its mood
     const lsKey="ms:why:"+scope+":"+p.t;
-    const apply=(o)=>setYearNote(n=>n&&n.t===p.t?{...n,text:o.text,ev:o.title||n.ev,loading:false}:n);
-    const remember=(title)=>{ if(!title)return; setKnownPoints(k=>{ const cur=k[scope]||[]; if(cur.some(x=>x.t===p.t))return k; return {...k,[scope]:[...cur,{t:p.t,title}]}; }); };
+    // A focused single-year analysis is far more accurate than the bulk series,
+    // so its mood corrects the curve at that point (US curated values are kept).
+    const apply=(o)=>setYearNote(n=>n&&n.t===p.t?{...n,text:o.text,ev:o.title||n.ev,mood:(!isUSscopeClick&&o.mood!=null)?o.mood:n.mood,loading:false}:n);
+    const remember=(title,mood)=>{ if(!title)return; setKnownPoints(k=>{ const cur=k[scope]||[]; const rest=cur.filter(x=>x.t!==p.t); return {...k,[scope]:[...rest,{t:p.t,title,mood:isUSscopeClick?null:(mood??null)}]}; }); };
     // 1) this device, 2) the shared DB (free), 3) generate once and save to both.
     const local=await store.get(lsKey);
-    if(local&&local.text){ apply(local); remember(local.title); return; }
+    if(local&&local.text){ apply(local); remember(local.title,local.mood); return; }
     const shared=await fetchNoteFull(scope,p.t);
-    if(shared){ store.set(lsKey,shared); apply(shared); remember(shared.title); return; }
+    if(shared){ store.set(lsKey,shared); apply(shared); remember(shared.title,shared.mood); return; }
     try{
-      const sys=`You are a concise, accurate social historian for a 'public mood' app. Respond ONLY valid JSON, no markdown: {"title":"<2–4 word event label, e.g. 'Financial crisis' or 'Housing boom'>","text":"<3–5 sentences explaining the mood of ${place} at that time and WHY — specific events, economy, conflict, politics, culture. Factual, name real events. No preamble.>"}`;
-      const user=`Country: ${place}. Time: ${label}. Estimated public mood: ${p.overall}/100 (0=stormy/bleak, 50=neutral, 100=radiant/hopeful)${p.ev?`. Key marker: ${p.ev}`:""}. Give the title and explanation.`;
+      const sys=`You are a concise, accurate social historian for a 'public mood' app. Analyze this ONE year carefully. Respond ONLY valid JSON, no markdown: {"title":"<2–4 word event label, e.g. 'Financial crisis' or 'Housing boom'>","mood":<your OWN careful 0-100 estimate of public mood for ${place} in THIS year — 0=bleak, 50=neutral, 100=radiant; crises/wars/pandemics/recessions are LOW (15-40), peace/growth/optimism HIGH (58-75); the number must match the events>,"text":"<3–5 sentences explaining the mood and WHY — specific real events, economy, conflict, politics, culture. No preamble.>"}`;
+      const user=`Country: ${place}. Time: ${label}. A rough prior estimate was ${p.overall}/100, but judge it yourself from the actual events. Give title, your calibrated mood, and explanation.`;
       const raw=await callModel(sys,user);
       const j=parseJson(raw)||{}; const text=(j.text||"").trim(); const title=(j.title||"").trim();
-      if(text){ const o={title,text}; store.set(lsKey,o); saveNoteFull(scope,p.t,title,text); apply(o); remember(title); }
+      const mood=Number.isFinite(Number(j.mood))?Math.max(0,Math.min(100,Math.round(Number(j.mood)))):null;
+      if(text){ const o={title,text,mood}; store.set(lsKey,o); saveNoteFull(scope,p.t,title,text,mood); apply(o); remember(title,mood); }
       else apply({text:"Couldn't load an explanation right now — try again."});
     }catch{ apply({text:"Couldn't load an explanation right now — try again."}); }
   };
