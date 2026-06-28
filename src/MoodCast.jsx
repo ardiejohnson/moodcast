@@ -911,15 +911,25 @@ export default function MoodCast(){
     if(auto)timer.current=setInterval(()=>read(includeFollows?[...CATEGORIES,...saved]:[...CATEGORIES],true),Math.max(1,interval)*60000);
     return ()=>{if(timer.current)clearInterval(timer.current);}; },[auto,interval,includeFollows,saved,read]);
 
+  // When a category's subtopics are (re)read, the card mood reflects their average.
+  const applySubAvg=(prev,subs)=>{ const vals=Object.values(subs||{}).map(x=>x&&x.mood).filter(m=>m!=null);
+    if(!vals.length)return {...prev,subs};
+    const avg=Math.round(vals.reduce((a,b)=>a+b,0)/vals.length); const t=Date.now();
+    return {...prev,subs,mood:avg,t,series:appendSeries(prev?.series,avg,t)}; };
+  const readCatSubs=async(cat)=>{ const subs={}; const n0=Math.min(3,perCat);
+    for(let i=0;i<cat.subs.length;i+=4){const batch=cat.subs.slice(i,i+4);const t=Date.now();
+      const res=await Promise.allSettled(batch.map(s=>gradeQuery(s.query,n0)));
+      res.forEach((r,j)=>{subs[batch[j].id]=r.status==="fulfilled"?{...r.value,t,n:n0}:{mood:null,items:[]};});}
+    return subs; };
+  const refreshCatSubs=async(cat)=>{ if(detailLoading)return;
+    setDetailLoading(true); const subs=await readCatSubs(cat);
+    setResults(s=>({...s,[cat.id]:applySubAvg(s[cat.id],subs)})); setDetailLoading(false); };
   const openById=(id)=>{ const c=CATEGORIES.find(x=>x.id===id); if(c)return openEntity("cat",c); const s=saved.find(x=>x.id===id); if(s)return openEntity("sub",s); };
   const openEntity=async(kind,ent)=>{
     setDetail({kind,id:ent.id});
     if(kind==="cat"){ if(resultsRef.current[ent.id]?.subs)return;
-      setDetailLoading(true); const subs={}; const n0=Math.min(3,perCat);
-      for(let i=0;i<ent.subs.length;i+=4){const batch=ent.subs.slice(i,i+4);const t=Date.now();
-        const res=await Promise.allSettled(batch.map(s=>gradeQuery(s.query,n0)));
-        res.forEach((r,j)=>{subs[batch[j].id]=r.status==="fulfilled"?{...r.value,t,n:n0}:{mood:null,items:[]};});}
-      setResults(s=>({...s,[ent.id]:{...s[ent.id],subs}})); setDetailLoading(false);
+      setDetailLoading(true); const subs=await readCatSubs(ent);
+      setResults(s=>({...s,[ent.id]:applySubAvg(s[ent.id],subs)})); setDetailLoading(false);
     } else { if(resultsRef.current[ent.id]?.items?.length)return;
       setDetailLoading(true); try{const r=await gradeQuery(ent.query,perCat);const t=Date.now();
         setResults(s=>({...s,[ent.id]:{...s[ent.id],mood:r.mood,items:r.items,series:appendSeries(s[ent.id]?.series,r.mood,t),t,n:perCat}}));}catch{} setDetailLoading(false);
@@ -931,7 +941,7 @@ export default function MoodCast(){
     const cur=resultsRef.current[catId]?.subs?.[sub.id]; const n=Math.min(MORE_CAP,(cur?.n||Math.min(3,perCat))+3);
     setMoreBusy(b=>[...b,key]);
     try{ const r=await gradeQuery(sub.query,n);
-      setResults(s=>({...s,[catId]:{...s[catId],subs:{...s[catId].subs,[sub.id]:{mood:r.mood,items:r.items,t:Date.now(),n}}}})); }catch{}
+      setResults(s=>{ const subs={...s[catId].subs,[sub.id]:{mood:r.mood,items:r.items,t:Date.now(),n}}; return {...s,[catId]:applySubAvg(s[catId],subs)}; }); }catch{}
     setMoreBusy(b=>b.filter(x=>x!==key));
   };
   const loadMoreSaved=async(ent)=>{ const key="ent:"+ent.id; if(moreBusy.includes(key))return;
@@ -1451,7 +1461,7 @@ export default function MoodCast(){
               <div style={{display:"flex",justifyContent:"space-between"}}>
                 <button onClick={()=>setDetail(null)} style={{...glassBtn,padding:"5px 12px",fontSize:13}}>← Close</button>
                 <div style={{display:"flex",gap:8}}>
-                  <button onClick={()=>refreshOne(ent)} disabled={busy} style={{...glassBtn,padding:"5px 12px",fontSize:13}}>↻ Refresh</button>
+                  <button onClick={()=>isCat?refreshCatSubs(ent):refreshOne(ent)} disabled={busy||detailLoading} style={{...glassBtn,padding:"5px 12px",fontSize:13}}>↻ Refresh</button>
                   {!isCat && <button onClick={()=>unsave(ent.id)} style={{...glassBtn,padding:"5px 12px",fontSize:13}}>Unfollow</button>}
                 </div>
               </div>
