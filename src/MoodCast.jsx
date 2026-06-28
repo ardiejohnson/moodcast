@@ -161,17 +161,22 @@ async function callModel(system, user, maxTokens){
   const data = await res.json();
   return data.text || "";
 }
-// Shared cache of chart "why" explanations (see api/note.js) — first visitor to
-// query a year pays the tokens; everyone after reads it free.
-async function fetchNote(key){
-  try{ const res=await fetch(`/api/note?key=${encodeURIComponent(key)}`,{cache:"no-store"});
-    if(!res.ok)return null; const d=await res.json(); return d.text||null;
+// Shared, crowd-built titled points on the mood chart (see api/note.js). First
+// visitor to query a year pays the tokens; it then shows as a dot for everyone.
+async function fetchKnownPoints(scope){
+  try{ const res=await fetch(`/api/note?scope=${encodeURIComponent(scope)}`,{cache:"no-store"});
+    if(!res.ok)return []; const d=await res.json(); return Array.isArray(d.points)?d.points:[];
+  }catch{ return []; }
+}
+async function fetchNoteFull(scope,t){
+  try{ const res=await fetch(`/api/note?scope=${encodeURIComponent(scope)}&t=${t}`,{cache:"no-store"});
+    if(!res.ok)return null; const d=await res.json(); return (d.title||d.text)?{title:d.title||"",text:d.text||""}:null;
   }catch{ return null; }
 }
-async function saveNote(key,text){
+async function saveNoteFull(scope,t,title,text){
   try{ await fetch("/api/note",{ method:"POST",
     headers:{ "Content-Type":"application/json", "x-moodcast-pass":PASSCODE },
-    body:JSON.stringify({ key, text }) });
+    body:JSON.stringify({ scope, t, title, text }) });
   }catch{ /* best-effort */ }
 }
 async function gradeQuery(query, n=4){
@@ -668,6 +673,7 @@ export default function MoodCast(){
   const [range,setRange]=useState("5Y");
   const [yearNote,setYearNote]=useState(null); // { t, label, mood, ev, live, text, loading }
   const [chartCountry,setChartCountry]=useState(null); // { code, label } | null — scopes the trend chart
+  const [knownPoints,setKnownPoints]=useState({}); // { scope: [{t,title}] } — shared queried points
   const [countrySeries,setCountrySeries]=useState({}); // { code: [points] }
   const [csBusy,setCsBusy]=useState([]); // codes whose history is generating
   // settings + view prefs
@@ -818,6 +824,12 @@ export default function MoodCast(){
 
   // ---- Mood Map ----
   useEffect(()=>{ fetchWorld().then(setWorldMoods); },[]);
+  // Load the shared queried-point markers for the chart's current scope.
+  useEffect(()=>{ const isUS=chartCountry&&(chartCountry.code==="840"||/united states/i.test(chartCountry.label));
+    const scope=(chartCountry&&!isUS)?chartCountry.code:"us";
+    if(knownPoints[scope]!==undefined)return;
+    fetchKnownPoints(scope).then(pts=>setKnownPoints(k=>k[scope]!==undefined?k:({...k,[scope]:pts})));
+  },[chartCountry,knownPoints]);
   const gradeCountry=useCallback(async(code,label,n)=>{
     const count=n||Math.min(4,perCat);
     setWorldBusy(b=>b.includes(code)?b:[...b,code]);
@@ -991,7 +1003,12 @@ export default function MoodCast(){
   const firstLiveT=useDefault?(history.length?Math.min(...history.map(h=>h.t)):null):(worldMoods[scopedCountry.code]?.t??null);
   const rangeMs=RANGES.find(r=>r[0]===range)?.[1] ?? null;
   const cutoff=rangeMs?Date.now()-rangeMs:-Infinity;
-  const chartData=fullHistory.filter(p=>p.t>=cutoff);
+  // Shared queried-point markers for the current scope → titles on the tooltip + dots.
+  const noteScope=scopedCountry?scopedCountry.code:"us";
+  const known=knownPoints[noteScope]||[];
+  const knownByT={}; known.forEach(kp=>{ knownByT[kp.t]=kp.title; });
+  const chartData=fullHistory.filter(p=>p.t>=cutoff).map(p=>(knownByT[p.t]!==undefined?{...p,ev:knownByT[p.t]||p.ev,known:true}:p));
+  const chartDots=known.map(kp=>{ const pt=chartData.find(d=>d.t===kp.t); return pt?{t:kp.t,y:pt.overall,title:kp.title}:null; }).filter(Boolean);
   // Shade the estimated stretch within view: from the first visible point up to where real data begins.
   const seedStart=chartData.length?chartData[0].t:0;
   const seedEnd=Math.min(firstLiveT??(chartData.length?chartData[chartData.length-1].t:0), chartData.length?chartData[chartData.length-1].t:0);
@@ -1012,24 +1029,26 @@ export default function MoodCast(){
     if(!p && e && e.activeLabel!=null) p=chartData.reduce((best,d)=>(best&&Math.abs(best.t-e.activeLabel)<=Math.abs(d.t-e.activeLabel))?best:d, null);
     if(!p)return;
     const label=pointLabel(p);
+    const scope=scopedCountry?scopedCountry.code:"us";
     setYearNote({ t:p.t, label, mood:p.overall, ev:p.ev, live:p.live, text:null, loading:!p.live });
     if(p.live){ setYearNote(n=>n&&n.t===p.t?{...n,text:`A real reading taken on ${label} — the news mood read ${p.overall}/100 (${moodWord(p.overall)}).`,loading:false}:n); return; }
     const place=scopedCountry?scopedCountry.label:"the United States";
-    const noteKey=(scopedCountry?scopedCountry.code:"us")+":"+p.t; // shared-DB key
-    const lsKey="ms:why:"+noteKey;
-    const apply=(txt)=>setYearNote(n=>n&&n.t===p.t?{...n,text:txt,loading:false}:n);
+    const lsKey="ms:why:"+scope+":"+p.t;
+    const apply=(o)=>setYearNote(n=>n&&n.t===p.t?{...n,text:o.text,ev:o.title||n.ev,loading:false}:n);
+    const remember=(title)=>{ if(!title)return; setKnownPoints(k=>{ const cur=k[scope]||[]; if(cur.some(x=>x.t===p.t))return k; return {...k,[scope]:[...cur,{t:p.t,title}]}; }); };
     // 1) this device, 2) the shared DB (free), 3) generate once and save to both.
     const local=await store.get(lsKey);
-    if(local){ apply(local); return; }
-    const shared=await fetchNote(noteKey);
-    if(shared){ store.set(lsKey,shared); apply(shared); return; }
+    if(local&&local.text){ apply(local); remember(local.title); return; }
+    const shared=await fetchNoteFull(scope,p.t);
+    if(shared){ store.set(lsKey,shared); apply(shared); remember(shared.title); return; }
     try{
-      const sys=`You are a concise, accurate social historian writing for a 'public mood' app. In 3–5 sentences, explain the mood and national sentiment of ${place} at the given time and WHY — the specific events, economy, conflict, politics, or cultural currents that shaped how optimistic or pessimistic people felt. Be factual and specific; name real events. No preamble, no caveats about data.`;
-      const user=`Country: ${place}. Time: ${label}. Estimated public mood: ${p.overall}/100 (0=stormy/bleak, 50=neutral, 100=radiant/hopeful)${p.ev?`. Key marker: ${p.ev}`:""}. Explain why the mood was around this level then.`;
-      const txt=await callModel(sys,user);
-      if(txt){ store.set(lsKey,txt); saveNote(noteKey,txt); apply(txt); }
-      else apply("Couldn't load an explanation right now — try again.");
-    }catch{ apply("Couldn't load an explanation right now — try again."); }
+      const sys=`You are a concise, accurate social historian for a 'public mood' app. Respond ONLY valid JSON, no markdown: {"title":"<2–4 word event label, e.g. 'Financial crisis' or 'Housing boom'>","text":"<3–5 sentences explaining the mood of ${place} at that time and WHY — specific events, economy, conflict, politics, culture. Factual, name real events. No preamble.>"}`;
+      const user=`Country: ${place}. Time: ${label}. Estimated public mood: ${p.overall}/100 (0=stormy/bleak, 50=neutral, 100=radiant/hopeful)${p.ev?`. Key marker: ${p.ev}`:""}. Give the title and explanation.`;
+      const raw=await callModel(sys,user);
+      const j=parseJson(raw)||{}; const text=(j.text||"").trim(); const title=(j.title||"").trim();
+      if(text){ const o={title,text}; store.set(lsKey,o); saveNoteFull(scope,p.t,title,text); apply(o); remember(title); }
+      else apply({text:"Couldn't load an explanation right now — try again."});
+    }catch{ apply({text:"Couldn't load an explanation right now — try again."}); }
   };
   const outBusy=searchBusy||questionBusy;
 
@@ -1383,7 +1402,8 @@ export default function MoodCast(){
                 <ReferenceLine y={50} stroke={INK2} strokeDasharray="3 3"/>
                 <Tooltip content={(props)=><MoodTip {...props} labelFmt={labelFmt}/>}/>
                 <Line type="monotone" dataKey="overall" name="Public mood" stroke="url(#mg)" strokeWidth={range==="250Y"||range==="100Y"?2:3} dot={false} isAnimationActive={!reduced}/>
-                {yearNote && <ReferenceDot x={yearNote.t} y={yearNote.mood} r={6} fill={moodColor(yearNote.mood)} stroke="#fff" strokeWidth={2.5} ifOverflow="hidden" isFront/>}
+                {chartDots.map(d=><ReferenceDot key={"k"+d.t} x={d.t} y={d.y} r={4} fill={moodColor(d.y)} stroke="#fff" strokeWidth={1.6} ifOverflow="hidden"/>)}
+                {yearNote && <ReferenceDot x={yearNote.t} y={yearNote.mood} r={6.5} fill={moodColor(yearNote.mood)} stroke="#fff" strokeWidth={2.5} ifOverflow="hidden" isFront/>}
               </LineChart>
             </ResponsiveContainer>}
           {yearNote && <div style={{margin:"12px 6px 4px",background:`linear-gradient(135deg, ${rgb(scl(moodRGB(yearNote.mood),.86))}, #FFFFFF)`,border:`1px solid ${LINE}`,borderRadius:14,padding:"14px 16px"}}>

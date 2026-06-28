@@ -1,10 +1,12 @@
-// Vercel serverless function — a shared cache of "why was the mood like this?"
-// explanations for points on the Public-mood-over-time chart. Historical facts
-// don't change, so the FIRST visitor to query a year pays the model tokens and
-// everyone after reads it free from here.
+// Vercel serverless function — a shared, crowd-built set of explained points on
+// the Public-mood-over-time chart. Each time a visitor queries a year, its short
+// title + explanation is saved here, so a dot appears on that country's line for
+// everyone and nobody re-spends tokens to regenerate it.
 //
-// Storage: Upstash Redis (shared MoodCast DB). Key:
-//   moodcast:why   hash { "<scope>:<t>": "<explanation text>" }
+// Storage: Upstash Redis (shared MoodCast DB). One hash per scope:
+//   moodcast:why:<scope>   field "<t>" -> JSON { title, text }
+// scope is "us" or a country code. Historical facts don't change → no expiry,
+// first-writer-wins.
 
 import { Redis } from '@upstash/redis';
 
@@ -20,10 +22,11 @@ function resolveRedisEnv() {
 const { url: REDIS_URL, token: REDIS_TOKEN } = resolveRedisEnv();
 const redis = new Redis({ url: REDIS_URL, token: REDIS_TOKEN });
 
-const WHY_KEY = 'moodcast:why';
 const RATE_LIMIT = 120, RATE_WINDOW_S = 60;
-
-const cleanKey = (v) => String(v == null ? '' : v).replace(/[^a-zA-Z0-9:_-]/g, '').slice(0, 80);
+const cleanScope = (v) => String(v == null ? 'us' : v).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24) || 'us';
+const cleanT = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) ? String(n) : ''; };
+const key = (scope) => `moodcast:why:${scope}`;
+const parse = (v) => { if (v && typeof v === 'object') return v; try { return JSON.parse(v); } catch { return null; } };
 
 function clientIp(req) {
   const fwd = req.headers['x-forwarded-for'];
@@ -46,10 +49,17 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
-      const key = cleanKey(req.query.key);
-      if (!key) return res.status(400).json({ error: 'Missing key.' });
-      const text = await redis.hget(WHY_KEY, key);
-      return res.status(200).json({ text: typeof text === 'string' ? text : null });
+      const scope = cleanScope(req.query.scope);
+      const t = cleanT(req.query.t);
+      if (t) { // one full entry
+        const raw = await redis.hget(key(scope), t);
+        const v = parse(raw) || {};
+        return res.status(200).json({ title: v.title || null, text: v.text || null });
+      }
+      // list of points (titles only) for rendering dots
+      const all = await redis.hgetall(key(scope));
+      const points = Object.entries(all || {}).map(([ts, v]) => { const p = parse(v) || {}; return { t: Number(ts), title: p.title || '' }; }).filter((p) => Number.isFinite(p.t));
+      return res.status(200).json({ points });
     }
 
     if (req.method === 'POST') {
@@ -61,12 +71,13 @@ export default async function handler(req, res) {
 
       let body = req.body;
       if (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = {}; } }
-      const key = cleanKey(body?.key);
+      const scope = cleanScope(body?.scope);
+      const t = cleanT(body?.t);
+      const title = String(body?.title || '').slice(0, 48);
       const text = String(body?.text || '').slice(0, 2000);
-      if (!key || !text) return res.status(400).json({ error: 'Expected key and text.' });
-      // Don't overwrite an existing fact (first writer wins; avoids drift).
-      const exists = await redis.hget(WHY_KEY, key);
-      if (!exists) await redis.hset(WHY_KEY, { [key]: text });
+      if (!t || !text) return res.status(400).json({ error: 'Expected t and text.' });
+      const exists = await redis.hget(key(scope), t); // first writer wins (no drift)
+      if (!exists) await redis.hset(key(scope), { [t]: JSON.stringify({ title, text }) });
       return res.status(200).json({ ok: true });
     }
 

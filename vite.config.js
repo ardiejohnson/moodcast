@@ -84,7 +84,10 @@ function mockApiPlugin() {
               { name: `${country} Times`, url: 'https://example.org', lang: 'Local' },
               { name: 'National Broadcaster', url: 'https://example.net', lang: 'English' },
             ] })
-          } else if (system.includes('historian')) text = `[MOCK] ${(user.match(/Time:\s*(.+?)\./)?.[1] || 'This period')} was shaped by the major economic and political currents of its day — booms, busts, wars, and shifting public confidence. (Local mock; the real app returns a researched paragraph.)`
+          } else if (system.includes('historian')) {
+            const when = user.match(/Time:\s*(.+?)\./)?.[1] || 'This period'
+            text = JSON.stringify({ title: '[mock] Notable era', text: `${when} was shaped by the major economic and political currents of its day — booms, busts, wars, and shifting public confidence. (Local mock; the real app returns a researched paragraph.)` })
+          }
           else text = system.includes('"items"') ? gradeMock(system, user) : answerMock(system, user)
           res.setHeader('content-type', 'application/json')
           res.end(JSON.stringify({ text, mocked: true }))
@@ -235,16 +238,24 @@ function mockApiPlugin() {
         next()
       })
 
-      // In-memory shared "why" note cache: notes[key] = text
+      // In-memory shared queried-point notes: notes[scope][t] = {title,text}
       const notes = {}
       server.middlewares.use('/api/note', async (req, res, next) => {
         res.setHeader('content-type', 'application/json')
         const url = new URL(req.url, 'http://localhost')
-        if (req.method === 'GET') { res.end(JSON.stringify({ text: notes[url.searchParams.get('key')] || null, mocked: true })); return }
+        if (req.method === 'GET') {
+          const scope = url.searchParams.get('scope') || 'us'
+          const t = url.searchParams.get('t')
+          const m = notes[scope] || {}
+          if (t) { const v = m[t] || {}; res.end(JSON.stringify({ title: v.title || null, text: v.text || null, mocked: true })); return }
+          res.end(JSON.stringify({ points: Object.entries(m).map(([ts, v]) => ({ t: Number(ts), title: v.title || '' })), mocked: true }))
+          return
+        }
         if (req.method === 'POST') {
           const b = await readBody(req)
-          if (!b.key || !b.text) { res.statusCode = 400; res.end('{"error":"bad"}'); return }
-          if (!notes[b.key]) notes[b.key] = String(b.text).slice(0, 2000)
+          if (!b.t || !b.text) { res.statusCode = 400; res.end('{"error":"bad"}'); return }
+          const scope = b.scope || 'us'; notes[scope] = notes[scope] || {}
+          if (!notes[scope][String(b.t)]) notes[scope][String(b.t)] = { title: String(b.title || '').slice(0, 48), text: String(b.text).slice(0, 2000) }
           res.end('{"ok":true,"mocked":true}')
           return
         }
