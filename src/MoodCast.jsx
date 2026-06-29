@@ -648,6 +648,30 @@ function ArticleModal({ it, onClose, voteData, voteMine, onVote, count, onCommen
   );
 }
 
+// Default top-to-bottom order of the movable dashboard sections (Hero is pinned).
+const PANEL_IDS=["picks","sunny","dark","ask","following","mover","topics","map","trend"];
+
+// Collapsible + movable dashboard section wrapper.
+function Panel({ title, titleNode, controls, collapsed, onToggle, onUp, onDown, canUp, canDown, order, children }){
+  const mv=(on)=>({width:27,height:27,display:"flex",alignItems:"center",justifyContent:"center",background:CARD,border:`1px solid ${LINE}`,borderRadius:8,fontSize:13,fontWeight:800,color:INK2,cursor:on?"pointer":"default",opacity:on?1:.3,lineHeight:1,flexShrink:0});
+  return (
+    <section style={{order,marginTop:14,background:CARD,border:`1px solid ${LINE}`,borderRadius:18,boxShadow:"0 2px 10px rgba(27,35,48,.04)",overflow:"hidden"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,padding:"10px 10px 10px 14px"}}>
+        <button onClick={onToggle} style={{display:"flex",alignItems:"center",gap:9,background:"transparent",border:"none",padding:0,cursor:"pointer",minWidth:0,flex:1,textAlign:"left"}}>
+          <span style={{color:INK2,fontSize:11,width:12,flexShrink:0,transition:"transform .15s",transform:collapsed?"rotate(-90deg)":"none"}}>▼</span>
+          {titleNode||<span style={{fontFamily:F.display,fontWeight:700,fontSize:15.5,color:INK,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{title}</span>}
+        </button>
+        <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0,flexWrap:"wrap",justifyContent:"flex-end"}}>
+          {!collapsed&&controls}
+          <button onClick={onUp} disabled={!canUp} style={mv(canUp)} title="Move up">↑</button>
+          <button onClick={onDown} disabled={!canDown} style={mv(canDown)} title="Move down">↓</button>
+        </div>
+      </div>
+      {!collapsed&&<div style={{padding:"0 14px 16px"}}>{children}</div>}
+    </section>
+  );
+}
+
 /* ---- Mood Map geometry (computed once) ---- */
 // Natural Earth keeps continents shaped naturally (no Mercator polar bloat).
 // Fit to the INHABITED world (excluding Antarctica) so the map fills the frame
@@ -784,6 +808,8 @@ export default function MoodCast(){
   const [catOrder,setCatOrder]=useState([]);
   const [editMode,setEditMode]=useState(false);
   const [showSettings,setShowSettings]=useState(false);
+  const [panelOrder,setPanelOrder]=useState(PANEL_IDS);   // movable section order
+  const [panelCollapsed,setPanelCollapsed]=useState({});  // { id: true } collapsed sections
   const [loadedPrefs,setLoadedPrefs]=useState(false);
   const [gate,setGate]=useState(false);
   const [passInput,setPassInput]=useState("");
@@ -803,6 +829,9 @@ export default function MoodCast(){
     const pw=await store.get("ms:pass"); if(pw)PASSCODE=pw;
     const st=await store.get("ms:settings"); if(st){ if(st.perCat)setPerCat(st.perCat); if(typeof st.includeFollows==="boolean")setIncludeFollows(st.includeFollows);
       if(typeof st.interval==="number")setIntervalMin(st.interval); if(Array.isArray(st.hiddenCats))setHiddenCats(st.hiddenCats); if(Array.isArray(st.catOrder))setCatOrder(st.catOrder); }
+    const ly=await store.get("ms:layout"); if(ly){
+      if(Array.isArray(ly.order)){ const valid=ly.order.filter(x=>PANEL_IDS.includes(x)); const missing=PANEL_IDS.filter(x=>!valid.includes(x)); setPanelOrder([...valid,...missing]); }
+      if(ly.collapsed&&typeof ly.collapsed==="object")setPanelCollapsed(ly.collapsed); }
     setLoadedPrefs(true);
     // Shared board: if the crowd's latest reading is newer than this device's,
     // show it. Merge over local entries so personal trend sparklines survive.
@@ -823,7 +852,23 @@ export default function MoodCast(){
   },[]);
   const submitPass=()=>{ const v=passInput.trim(); if(!v)return; PASSCODE=v; store.set("ms:pass",v); setGate(false); setPassInput(""); setError(null); };
   useEffect(()=>{ if(loadedPrefs)store.set("ms:settings",{perCat,includeFollows,interval,hiddenCats,catOrder}); },[perCat,includeFollows,interval,hiddenCats,catOrder,loadedPrefs]);
+  useEffect(()=>{ if(loadedPrefs)store.set("ms:layout",{order:panelOrder,collapsed:panelCollapsed}); },[panelOrder,panelCollapsed,loadedPrefs]);
   useEffect(()=>{ if(loadedPrefs)store.set("ms:saved",saved); },[saved,loadedPrefs]);
+
+  // Which movable panels are currently shown (some are conditional).
+  const panelShown=useCallback((id)=> id==="picks" ? !!(topArts.sunny||topArts.cloudy)
+    : id==="following" ? saved.length>0 : true, [topArts,saved.length]);
+  const togglePanel=(id)=>setPanelCollapsed(c=>({...c,[id]:!c[id]}));
+  const movePanel=(id,dir)=>setPanelOrder(o=>{
+    const vis=o.filter(panelShown); const vi=vis.indexOf(id); const nj=vi+dir;
+    if(vi<0||nj<0||nj>=vis.length)return o;
+    const neighbor=vis[nj]; const a=[...o]; const i=a.indexOf(id),k=a.indexOf(neighbor);
+    [a[i],a[k]]=[a[k],a[i]]; return a; });
+  const resetLayout=()=>{ setPanelOrder(PANEL_IDS); setPanelCollapsed({}); };
+  // Per-panel props for the Panel wrapper (collapse, move arrows, CSS display order).
+  const panelProps=(id)=>{ const vis=panelOrder.filter(panelShown); const vi=vis.indexOf(id);
+    return { collapsed:!!panelCollapsed[id], onToggle:()=>togglePanel(id), onUp:()=>movePanel(id,-1), onDown:()=>movePanel(id,1),
+      canUp:vi>0, canDown:vi>=0&&vi<vis.length-1, order:panelOrder.indexOf(id) }; };
 
   const visibleCats=(()=>{ const byId=Object.fromEntries(CATEGORIES.map(c=>[c.id,c])); const seen=new Set(); const out=[];
     (catOrder||[]).forEach(id=>{if(byId[id]&&!seen.has(id)){seen.add(id);out.push(byId[id]);}});
@@ -1284,22 +1329,21 @@ export default function MoodCast(){
           </div>
         </section>
 
-        {(topArts.sunny||topArts.cloudy) && <div style={{marginTop:14}}>
-          <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,letterSpacing:"0.02em",marginBottom:8}}>The crowd’s picks today <span style={{fontWeight:600,color:"#9AA3AE",fontSize:12}}>· updates live</span></div>
+        {error&&<div style={{marginTop:14,padding:"10px 14px",border:`1px solid #E7B4A8`,background:"#FBEDE9",borderRadius:12,color:"#9A3B26",fontSize:13}}>{error}</div>}
+
+        {/* Movable / collapsible dashboard sections (CSS order controls display position). */}
+        <div style={{display:"flex",flexDirection:"column"}}>
+
+        {/* THE CROWD'S PICKS */}
+        {panelShown("picks") && <Panel title="The crowd’s picks today" controls={<span style={{fontWeight:600,color:"#9AA3AE",fontSize:12}}>updates live</span>} {...panelProps("picks")}>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",gap:12}}>
             <CrowdPick pick={topArts.sunny} kind="sunny"/>
             <CrowdPick pick={topArts.cloudy} kind="cloudy"/>
           </div>
-        </div>}
-
-        {error&&<div style={{marginTop:14,padding:"10px 14px",border:`1px solid #E7B4A8`,background:"#FBEDE9",borderRadius:12,color:"#9A3B26",fontSize:13}}>{error}</div>}
+        </Panel>}
 
         {/* THE SUNNY SIDE */}
-        <section style={{marginTop:18}}>
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,gap:10}}>
-            <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,letterSpacing:"0.02em",display:"flex",alignItems:"center",gap:8}}><Glyph mood={94} size={22}/>The Sunny Side</div>
-            <button onClick={readSunny} disabled={sunnyBusy} style={{background:CARD,border:`1px solid ${LINE}`,borderRadius:999,padding:"6px 13px",fontSize:12.5,fontWeight:700,color:INK,opacity:sunnyBusy?.6:1,cursor:sunnyBusy?"default":"pointer",display:"flex",alignItems:"center",gap:7}}>{sunnyBusy?<><Spinner size={13}/>Finding…</>:"Refresh"}</button>
-          </div>
+        <Panel titleNode={<span style={{fontFamily:F.display,fontWeight:700,fontSize:15.5,color:INK,display:"flex",alignItems:"center",gap:8}}><Glyph mood={94} size={20}/>The Sunny Side</span>} controls={<button onClick={readSunny} disabled={sunnyBusy} style={{background:CARD,border:`1px solid ${LINE}`,borderRadius:999,padding:"6px 13px",fontSize:12.5,fontWeight:700,color:INK,opacity:sunnyBusy?.6:1,cursor:sunnyBusy?"default":"pointer",display:"flex",alignItems:"center",gap:7}}>{sunnyBusy?<><Spinner size={13}/>Finding…</>:"Refresh"}</button>} {...panelProps("sunny")}>
           <div style={{background:"linear-gradient(135deg, #FFF6E0 0%, #FFFDF7 100%)",border:"1px solid #F0E2BE",borderRadius:18,padding:18,boxShadow:"0 2px 12px rgba(244,169,59,.12)"}}>
             {sunny ? (
               <div style={{display:"flex",gap:16,alignItems:"flex-start"}}>
@@ -1320,14 +1364,10 @@ export default function MoodCast(){
               <div style={{display:"flex",alignItems:"center",gap:12,fontSize:14,color:INK2}}>{sunnyBusy?<><Spinner size={18}/>Scanning for the day’s most uplifting story…</>:"Tap Refresh (or “Read today’s sky”) to surface the most positive story in the news right now."}</div>
             )}
           </div>
-        </section>
+        </Panel>
 
         {/* THE DARK SIDE */}
-        <section style={{marginTop:14}}>
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,gap:10}}>
-            <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,letterSpacing:"0.02em",display:"flex",alignItems:"center",gap:8}}><Glyph mood={10} size={22}/>The Dark Side</div>
-            <button onClick={readDark} disabled={darkBusy} style={{background:CARD,border:`1px solid ${LINE}`,borderRadius:999,padding:"6px 13px",fontSize:12.5,fontWeight:700,color:INK,opacity:darkBusy?.6:1,cursor:darkBusy?"default":"pointer",display:"flex",alignItems:"center",gap:7}}>{darkBusy?<><Spinner size={13}/>Finding…</>:"Refresh"}</button>
-          </div>
+        <Panel titleNode={<span style={{fontFamily:F.display,fontWeight:700,fontSize:15.5,color:INK,display:"flex",alignItems:"center",gap:8}}><Glyph mood={10} size={20}/>The Dark Side</span>} controls={<button onClick={readDark} disabled={darkBusy} style={{background:CARD,border:`1px solid ${LINE}`,borderRadius:999,padding:"6px 13px",fontSize:12.5,fontWeight:700,color:INK,opacity:darkBusy?.6:1,cursor:darkBusy?"default":"pointer",display:"flex",alignItems:"center",gap:7}}>{darkBusy?<><Spinner size={13}/>Finding…</>:"Refresh"}</button>} {...panelProps("dark")}>
           <div style={{background:"linear-gradient(135deg, #EAEEF4 0%, #FAFBFD 100%)",border:"1px solid #D3DBE6",borderRadius:18,padding:18,boxShadow:"0 2px 12px rgba(94,126,168,.12)"}}>
             {dark ? (
               <div style={{display:"flex",gap:16,alignItems:"flex-start"}}>
@@ -1348,11 +1388,10 @@ export default function MoodCast(){
               <div style={{display:"flex",alignItems:"center",gap:12,fontSize:14,color:INK2}}>{darkBusy?<><Spinner size={18}/>Scanning for the day’s heaviest story…</>:"Tap Refresh (or “Read today’s sky”) to surface the most sobering story in the news right now."}</div>
             )}
           </div>
-        </section>
+        </Panel>
 
         {/* SEARCH / ASK */}
-        <section style={{marginTop:18}}>
-          <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,letterSpacing:"0.02em",marginBottom:8,paddingLeft:2}}>Ask a Question</div>
+        <Panel title="Ask a Question" {...panelProps("ask")}>
           <div style={{display:"flex",alignItems:"center",gap:10,background:CARD,border:`1px solid ${LINE}`,borderRadius:16,padding:"10px 12px 10px 16px",boxShadow:"0 2px 10px rgba(27,35,48,.04)"}}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={INK2} strokeWidth="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
             <input value={q} onChange={e=>setQ(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")submitSearch();}} placeholder={"e.g. “what country is in the worst mood right now?” — or look up any subject"}/>
@@ -1413,12 +1452,11 @@ export default function MoodCast(){
               {searchResult.items?.length>0 && <ul style={{listStyle:"none",margin:"14px 0 0",padding:0,display:"grid",gap:9}}>{searchResult.items.map((it,i)=><Headline key={i} it={it}/>)}</ul>}
             </div>
           )}
-        </section>
+        </Panel>
 
         {/* FOLLOWING */}
-        {saved.length>0 && (
-          <section style={{marginTop:22}}>
-            <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,letterSpacing:"0.02em",marginBottom:12}}>Following · {saved.length}{editMode?" · drag with ↑ ↓":""}</div>
+        {panelShown("following") && (
+          <Panel titleNode={<span style={{fontFamily:F.display,fontWeight:700,fontSize:15.5,color:INK}}>Following · {saved.length}{editMode?" · drag with ↑ ↓":""}</span>} {...panelProps("following")}>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:14}}>
               {saved.map((s,idx)=>{const d=results[s.id];const m=d?.mood;const series=(d?.series||[]).map(p=>p.mood);const loading=loadingIds.includes(s.id);
                 return (<div key={s.id} className={loading?"cat busy-card":"cat"} style={{position:"relative",background:CARD,border:`1px solid ${LINE}`,borderRadius:18,padding:16,boxShadow:"0 2px 10px rgba(27,35,48,.04)"}}>
@@ -1445,23 +1483,19 @@ export default function MoodCast(){
                   {!editMode&&m!=null&&<CommentButton compact count={commentCounts[s.id]} onClick={()=>setCommentsFor({id:s.id,label:s.subject})}/>}
                 </div>);})}
             </div>
-          </section>
+          </Panel>
         )}
 
-        {/* SURPRISE */}
-        <div style={{marginTop:18,display:"flex",alignItems:"center",gap:12,background:CARD,border:`1px solid ${LINE}`,borderRadius:14,padding:"12px 16px",boxShadow:"0 2px 10px rgba(27,35,48,.04)"}}>
-          <div style={{fontSize:11,fontWeight:800,letterSpacing:"0.1em",color:INK2,textTransform:"uppercase",whiteSpace:"nowrap"}}>Today’s mover</div>
+        {/* TODAY'S MOVER */}
+        <Panel title="Today’s mover" {...panelProps("mover")}>
           {mover ? <div style={{fontSize:15,fontWeight:600}}>{mover.label} {mover.d>0?"is brightening":"is darkening"} <span style={{color:moodColor(mover.d>0?75:25),fontWeight:800}}>{mover.d>0?`▲ +${mover.d}`:`▼ ${mover.d}`}</span> since your last reading.</div>
             : <div style={{fontSize:14,color:INK2}}>Take a couple of readings and the biggest shift in mood shows up here.</div>}
-        </div>
+        </Panel>
 
-        {/* CATEGORY GRID */}
-        <div style={{marginTop:22,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
-          <div style={{fontFamily:F.display,fontWeight:700,fontSize:15,color:INK2,letterSpacing:"0.02em"}}>Moodcast by topic</div>
-          <button onClick={()=>setEditMode(v=>!v)} style={{background:editMode?ACCENT:CARD,color:editMode?"#fff":INK,border:`1px solid ${editMode?ACCENT:LINE}`,borderRadius:999,padding:"6px 13px",fontSize:12.5,fontWeight:700}}>{editMode?"Done":"Customize"}</button>
-        </div>
-        {editMode&&<div style={{marginTop:8,fontSize:12.5,color:INK2,background:"#EEF4FF",border:`1px solid #D6E4FB`,borderRadius:12,padding:"9px 13px"}}>Reorder with ↑ ↓, hide with ✕. Hidden topics still count toward the headline mood and can be restored in Settings.</div>}
-        <section style={{marginTop:12,display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(232px,1fr))",gap:14}}>
+        {/* MOODCAST BY TOPIC */}
+        <Panel title="Moodcast by topic" controls={<button onClick={()=>setEditMode(v=>!v)} style={{background:editMode?ACCENT:CARD,color:editMode?"#fff":INK,border:`1px solid ${editMode?ACCENT:LINE}`,borderRadius:999,padding:"6px 13px",fontSize:12.5,fontWeight:700}}>{editMode?"Done":"Customize"}</button>} {...panelProps("topics")}>
+          {editMode&&<div style={{marginBottom:12,fontSize:12.5,color:INK2,background:"#EEF4FF",border:`1px solid #D6E4FB`,borderRadius:12,padding:"9px 13px"}}>Reorder with ↑ ↓, hide with ✕. Hidden topics still count toward the headline mood and can be restored in Settings.</div>}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(232px,1fr))",gap:14}}>
           {visibleCats.map((c,idx)=>{const d=results[c.id];const loading=loadingIds.includes(c.id);const m=d?.mood;const has=m!=null;const series=(d?.series||[]).map(p=>p.mood);
             return (<div key={c.id} className={loading?"cat busy-card":"cat"} style={{position:"relative",background:CARD,border:`1px solid ${LINE}`,borderRadius:18,padding:16,boxShadow:"0 2px 10px rgba(27,35,48,.04)"}}>
               {editMode ? (<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
@@ -1484,27 +1518,22 @@ export default function MoodCast(){
               {!editMode&&!has&&!loading&&<button onClick={()=>refreshOne(c)} disabled={busy} style={{width:"100%",marginTop:12,background:ACCENT,color:"#fff",borderRadius:10,padding:"9px 0",fontSize:13,fontWeight:700,opacity:busy?.5:1,cursor:busy?"not-allowed":"pointer"}}>Get mood</button>}
               {!editMode&&has&&<CommentButton compact count={commentCounts[c.id]} onClick={()=>setCommentsFor({id:c.id,label:c.label})}/>}
             </div>);})}
-        </section>
+          </div>
+        </Panel>
 
         {/* MOOD MAP */}
-        <section style={{marginTop:24,background:CARD,border:`1px solid ${LINE}`,borderRadius:18,padding:"16px 16px 14px",boxShadow:"0 2px 10px rgba(27,35,48,.04)"}}>
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10,marginBottom:4}}>
-            <div>
-              <div style={{fontFamily:F.display,fontWeight:800,fontSize:18,display:"flex",alignItems:"center",gap:8}}>🗺️ Mood Map</div>
-              <div style={{fontSize:12.5,color:INK2,fontWeight:600,marginTop:2}}>How the world feels, place by place. Tap any country to read its news.{worldCount>0?` · ${worldCount} read`:""}</div>
-            </div>
-            <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-              {worldProgress ? (
-                <button onClick={()=>{stopWorldRef.current=true;}} style={{background:CARD,border:`1px solid ${LINE}`,color:INK,borderRadius:12,padding:"8px 14px",fontSize:13,fontWeight:700,display:"flex",alignItems:"center",gap:8,cursor:"pointer"}}>
-                  <Spinner size={14} color={ACCENT}/>Reading {worldProgress.done}/{worldProgress.total} · Stop
-                </button>
-              ) : (<>
-                <button onClick={readBigCountries} disabled={worldAllBusy} style={{...primary(worldAllBusy),padding:"8px 14px",display:"flex",alignItems:"center",gap:8}}>{worldAllBusy?<><Spinner size={14} color="#fff"/>Reading<Dots color="#fff"/></>:"Read major countries"}</button>
-                <ConfirmButton label="Read all countries" onConfirm={readAllCountries} style={{background:CARD,border:`1px solid ${LINE}`,color:INK,borderRadius:12,padding:"8px 14px",fontSize:13,fontWeight:700,cursor:"pointer"}}/>
-              </>)}
-            </div>
-          </div>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginTop:12,background:CARD,border:`1px solid ${LINE}`,borderRadius:12,padding:"7px 9px 7px 13px"}}>
+        <Panel titleNode={<span style={{fontFamily:F.display,fontWeight:700,fontSize:15.5,color:INK,display:"flex",alignItems:"center",gap:8}}>🗺️ Mood Map</span>} controls={
+          worldProgress ? (
+            <button onClick={()=>{stopWorldRef.current=true;}} style={{background:CARD,border:`1px solid ${LINE}`,color:INK,borderRadius:12,padding:"8px 14px",fontSize:13,fontWeight:700,display:"flex",alignItems:"center",gap:8,cursor:"pointer"}}>
+              <Spinner size={14} color={ACCENT}/>Reading {worldProgress.done}/{worldProgress.total} · Stop
+            </button>
+          ) : (<>
+            <button onClick={readBigCountries} disabled={worldAllBusy} style={{...primary(worldAllBusy),padding:"8px 14px",display:"flex",alignItems:"center",gap:8}}>{worldAllBusy?<><Spinner size={14} color="#fff"/>Reading<Dots color="#fff"/></>:"Read major countries"}</button>
+            <ConfirmButton label="Read all countries" onConfirm={readAllCountries} style={{background:CARD,border:`1px solid ${LINE}`,color:INK,borderRadius:12,padding:"8px 14px",fontSize:13,fontWeight:700,cursor:"pointer"}}/>
+          </>)
+        } {...panelProps("map")}>
+          <div style={{fontSize:12.5,color:INK2,fontWeight:600,marginBottom:4}}>How the world feels, place by place. Tap any country to read its news.{worldCount>0?` · ${worldCount} read`:""}</div>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginTop:8,background:CARD,border:`1px solid ${LINE}`,borderRadius:12,padding:"7px 9px 7px 13px"}}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={INK2} strokeWidth="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
             <input value={mapQ} onChange={e=>setMapQ(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")searchCountryMap();}} placeholder="Jump to a country — type a name…" style={{flex:1,border:"none",background:"transparent",fontSize:14,fontFamily:"inherit",outline:"none",color:INK}}/>
             <button onClick={searchCountryMap} disabled={!mapQ.trim()} style={{background:ACCENT,color:"#fff",border:"none",borderRadius:9,padding:"7px 14px",fontSize:13,fontWeight:700,opacity:mapQ.trim()?1:.5,cursor:mapQ.trim()?"pointer":"not-allowed"}}>Go</button>
@@ -1554,23 +1583,21 @@ export default function MoodCast(){
                  </>}
             </div>
           </div>}
-        </section>
+        </Panel>
 
         {/* OVERALL TREND */}
-        <section style={{marginTop:24,background:CARD,border:`1px solid ${LINE}`,borderRadius:18,padding:"16px 14px 8px",boxShadow:"0 2px 10px rgba(27,35,48,.04)"}}>
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8,paddingLeft:6,marginBottom:10}}>
-            <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-              <div style={{fontFamily:F.display,fontWeight:700,fontSize:17}}>Public mood over time</div>
+        <Panel titleNode={<span style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+              <span style={{fontFamily:F.display,fontWeight:700,fontSize:15.5,color:INK}}>Public mood over time</span>
               {cScope
-                ? <span style={{display:"inline-flex",alignItems:"center",gap:6,background:"#EEF4FF",border:`1px solid #D6E4FB`,borderRadius:999,padding:"3px 6px 3px 11px",fontSize:12.5,fontWeight:700,color:INK}}>{cScope.label}<button onClick={()=>setChartCountry(null)} title="Back to U.S." style={{background:"transparent",border:"none",color:INK2,fontSize:14,cursor:"pointer",lineHeight:1,padding:"0 2px"}}>×</button></span>
+                ? <span style={{display:"inline-flex",alignItems:"center",gap:6,background:"#EEF4FF",border:`1px solid #D6E4FB`,borderRadius:999,padding:"3px 6px 3px 11px",fontSize:12.5,fontWeight:700,color:INK}}>{cScope.label}<span onClick={(e)=>{e.stopPropagation();setChartCountry(null);}} title="Back to U.S." style={{color:INK2,fontSize:14,cursor:"pointer",lineHeight:1,padding:"0 2px"}}>×</span></span>
                 : <span style={{fontSize:12.5,color:INK2,fontWeight:600}}>· United States</span>}
-            </div>
+            </span>} controls={
             <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
               {RANGES.map(([lbl])=>(
                 <button key={lbl} onClick={()=>{setRange(lbl);setView(null);}} style={{background:(range===lbl&&!view)?ACCENT:CARD,color:(range===lbl&&!view)?"#fff":INK2,border:`1px solid ${(range===lbl&&!view)?ACCENT:LINE}`,borderRadius:8,padding:"4px 8px",fontSize:11.5,fontWeight:700,cursor:"pointer"}}>{lbl}</button>
               ))}
             </div>
-          </div>
+        } {...panelProps("trend")}>
           {cSeriesLoading ? <div style={{padding:"40px 12px",textAlign:"center",color:INK,fontSize:13.5,fontWeight:600,display:"flex",alignItems:"center",justifyContent:"center",gap:10}}><Spinner size={18} color={ACCENT}/>Building {scopedCountry?.label}’s mood history<Dots/></div>
           : chartData.length<2 ? <div style={{padding:"34px 12px",textAlign:"center",color:INK2,fontSize:13}}>{scopedCountry?`No history for ${scopedCountry.label} in this range yet.`:"Not enough data in this range yet. Take a few readings, or pick a longer span to see the historical arc."}</div>
           : <div ref={chartWrapRef} onPointerDown={chartPointerDown} onPointerMove={chartPointerMove} onPointerUp={chartPointerUp} onPointerCancel={chartPointerUp} style={{position:"relative",touchAction:"pan-y",cursor:"grab"}}>
@@ -1607,7 +1634,9 @@ export default function MoodCast(){
           <div style={{fontSize:11,color:"#9AA3AE",padding:"6px 6px 0",lineHeight:1.5}}>{scopedCountry
             ? <>An <b style={{fontWeight:700}}>AI estimate</b> of {scopedCountry.label}’s public mood back to ~1700, reconstructed from documented history — not a measurement. <b style={{fontWeight:700}}>Tap any point</b> on the line to learn what was happening (it’s saved & shared with everyone). Select a country on the Mood Map to switch, or × to return to the U.S.</>
             : <>The shaded stretch is a <b style={{fontWeight:700}}>historical estimate</b> of U.S. public mood, not a measurement — reconstructed from documented conditions, and from 1952 the U. Michigan Consumer Sentiment Index and (from 1979) Gallup. <b style={{fontWeight:700}}>Tap any point</b> on the line to learn why. Pick a country on the Mood Map to see its history. Your live readings add real data from today.</>}</div>
-        </section>
+        </Panel>
+
+        </div>{/* end movable sections */}
 
         <div style={{marginTop:16,fontSize:11,color:"#9AA3AE",textAlign:"center",maxWidth:560,marginLeft:"auto",marginRight:"auto",lineHeight:1.5}}>A playful read on the mood of the news, not a precise measurement. Scores are AI estimates of recent headlines, searched live.</div>
       </div>
@@ -1695,6 +1724,11 @@ export default function MoodCast(){
                   <ConfirmButton label="Clear trend history" onConfirm={clearHistory} style={{background:CARD,border:`1px solid ${LINE}`,borderRadius:10,padding:"8px 13px",fontSize:13,fontWeight:700,color:INK}}/>
                   <ConfirmButton label="Remove all follows" onConfirm={()=>setSaved([])} style={{background:CARD,border:`1px solid ${LINE}`,borderRadius:10,padding:"8px 13px",fontSize:13,fontWeight:700,color:"#B4453A"}}/>
                 </div>
+              </div>
+              <div>
+                <div style={{fontWeight:700,fontSize:14,marginBottom:6}}>Layout</div>
+                <div style={{fontSize:13,color:INK2,marginBottom:8,lineHeight:1.45}}>Collapse sections with the ▼ chevron and reorder them with the ↑ ↓ arrows on each section header. Your arrangement is saved on this device.</div>
+                <button onClick={resetLayout} style={{background:CARD,border:`1px solid ${LINE}`,borderRadius:10,padding:"8px 13px",fontSize:13,fontWeight:700,color:INK}}>↺ Reset to default position</button>
               </div>
             </div>
           </div>
