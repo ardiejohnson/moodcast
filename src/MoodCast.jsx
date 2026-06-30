@@ -1287,8 +1287,6 @@ export default function MoodCast(){
         @media (prefers-reduced-motion: reduce){.ms *{transition:none !important;}.ms .spin{animation:none !important;}.ms .skel{animation:none !important;background:#E5EAEF !important;}.ms .busy-card::after{display:none;}.ms .dots b{animation:none !important;opacity:.7;}}
       `}</style>
 
-      <div style={{textAlign:"center",background:"#1B2330",color:"#fff",padding:"8px 12px",fontWeight:700,fontSize:14,borderRadius:8,marginBottom:12}}>ArdieWorks test ✅</div>
-
       <div className="ms" style={{maxWidth:1080,margin:"0 auto"}}>
         <a href="https://ardiejohnson.com" style={{display:"inline-flex",alignItems:"center",gap:6,background:CARD,border:`1px solid ${LINE}`,borderRadius:999,padding:"5px 12px",fontSize:12.5,fontWeight:700,color:INK,textDecoration:"none",marginBottom:12}}>← ardiejohnson.com</a>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,gap:10}}>
