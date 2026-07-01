@@ -1005,13 +1005,13 @@ export default function MoodCast(){
     else setCountrySeries(s=>({...s,[code]:[]})); // mark done so the spinner clears even on failure
     setCsBusy(b=>b.filter(x=>x!==code));
   },[countrySeries,csBusy]);
-  const onPickCountry=useCallback(async(code,label)=>{
+  const onPickCountry=useCallback(async(code,label,force=false)=>{
     setChartCountry({code,label}); ensureCountrySeries(code,label);
     ensureCountrySites(code,label);
     const ex=worldMoods[code];
-    if(ex){ setWorldSel({code,label,mood:ex.mood,items:ex.items,loading:false}); return; }
+    if(ex&&!force){ setWorldSel({code,label,mood:ex.mood,items:ex.items,loading:false}); return; }
     if(worldBusy.includes(code))return;
-    setWorldSel({code,label,loading:true});
+    setWorldSel({code,label,mood:ex?.mood,items:ex?.items,loading:true});
     const entry=await gradeCountry(code,label);
     setWorldSel(s=>s&&s.code===code?(entry?{code,label,mood:entry.mood,items:entry.items,loading:false}:{code,label,error:true,loading:false}):s);
   },[worldMoods,worldBusy,gradeCountry,ensureCountrySites,ensureCountrySeries]);
@@ -1553,7 +1553,7 @@ export default function MoodCast(){
                 <div><div style={{fontFamily:F.display,fontWeight:800,fontSize:20,lineHeight:1.1}}>{worldSel.label}</div>
                   <div style={{fontWeight:600,opacity:.95,fontSize:13,marginTop:2}}>{worldSel.loading?"Reading the latest…":worldSel.error?"Couldn’t read this one":`${moodWord(worldSel.mood)} · ${worldSel.mood??"——"}/100${worldMoods[worldSel.code]?.t?` · updated ${ago(worldMoods[worldSel.code].t)}`:""}`}</div></div></div>
               <div style={{display:"flex",gap:8}}>
-                <button onClick={()=>onPickCountry(worldSel.code,worldSel.label)} disabled={worldBusy.includes(worldSel.code)} style={{...glassBtn,padding:"6px 12px",fontSize:13}}>↻ Refresh</button>
+                <button onClick={()=>onPickCountry(worldSel.code,worldSel.label,true)} disabled={worldBusy.includes(worldSel.code)} style={{...glassBtn,padding:"6px 12px",fontSize:13}}>↻ Refresh</button>
                 <button onClick={()=>setWorldSel(null)} style={{...glassBtn,padding:"6px 12px",fontSize:13}}>Close</button>
               </div>
             </div>
